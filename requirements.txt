@@ -1,0 +1,7 @@
+matplotlib>=3.5
+open3d==0.18.0
+numpy==1.26.4
+Pillow>=9.0
+scipy==1.15.1
+torch>=2.4
+torchvision>=0.13
