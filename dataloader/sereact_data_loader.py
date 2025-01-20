@@ -90,7 +90,6 @@ class SereactDataloader(Dataset):
         mask = sample['mask']
 
         if self.debug:
-            visualize_image(image=image)
             visualize_masks_on_image(image=image, masks=mask)
             visualize_point_cloud(pc_input=pcd, color_image=image)
             visualize_bounding_box(pc_input=pcd, bbox_points=bbox3d, color_image=image)
