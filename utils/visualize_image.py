@@ -67,13 +67,20 @@ def visualize_masks_on_image(
     colors = plt.cm.get_cmap('tab20', num_masks)
     unique_colors = [colors(i) for i in range(num_masks)]
 
-    # Plot the image
-    plt.imshow(image_array)
-
-    # Plot each mask on top of the image
+    # Create a figure with two subplots.
+    _, axes = plt.subplots(1, 2, figsize=(12,6))
+    
+    # Plot the original image on the left.
+    axes[0].imshow(image_array)
+    axes[0].axis('off')
+    axes[0].set_title('Original Image')
+    
+    # Plot the masks on the image on the left of the subplots.
+    axes[1].imshow(image_array)
     for i, mask in enumerate(maskarray):
         # Overlay the mask on the image
         plt.contourf(mask, levels=[0.5, 1.5], colors=[unique_colors[i]], alpha=0.5, cmap=None)
-
-    plt.axis('off')
+    axes[1].axis('off')
+    axes[1].set_title('Image with masks')
+    
     plt.show()
