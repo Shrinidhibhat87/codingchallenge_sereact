@@ -2,6 +2,21 @@
 Python file that contains some miscellaneous functions that for augmentation and model training.
 """
 import torch
+import numpy as np
+
+
+def worker_init_fn(worker_id):
+    """
+    Initialize the random seed for a worker process.
+
+    This function is used to ensure that each worker process has a different random seed,
+    which is important for data loading in parallel.
+
+    Args:
+        worker_id (int): The ID of the worker process.
+    """
+    # Set the random seed for numpy based on the current random state and worker ID
+    np.random.seed(np.random.get_state()[1][0] + worker_id)
 
 
 def shift_scale_points(pred_xyz, src_range, dst_range=None):
