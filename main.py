@@ -1,7 +1,5 @@
 """
 Main file.
-Currently capable of only loading data.
-Future work would inspire application of methods to understand the scene.
 """
 
 import argparse
@@ -87,19 +85,16 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help='Path to the folder containing subfolders with required files',
     )
-    
+
     ############ Training Parameters ############
-    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
+    parser.add_argument('--seed', type=int, default=40, help='Random seed for reproducibility')
     parser.add_argument('--epochs', type=int, default=10, help='Number of epochs to train')
     parser.add_argument('--batch_size', type=int, default=2, help='Batch size for training')
-    parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for dataloader')
-    parser.add_argument('--checkpoint_dir', type=str, default=None, help='Directory to save/load checkpoints')
-    
+    parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for dataloader')    
     
     ############ Testing Parameters ############
     parser.add_argument('--test_only', type=bool, default=False, help='Flag to run test only')
-    
-    
+
     ############ Model parameters ############
     ########## Preencoder and Encoder parameters ##########
     parser.add_argument('--encoder_dim', default=256, type=int)
@@ -110,6 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--encoder_activation", default='relu', type=str)
     parser.add_argument("--encoder_num_layers", default=3, type=int)
     parser.add_argument("--encoder_type", default='vanilla', type=str)
+    parser.add_argument("--preencoder_npoints", default=2048, type=int)
     # Maybe need some parameters for the preencoder
     ########## Decoder parameters ##########
     parser.add_argument('--decoder_dim', default=256, type=int)
@@ -121,7 +117,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--position_embedding", default='fourier', type=str, choices=['sine', 'fourier'])
     parser.add_argument("--mlp_dropout", default=0.3, type=float)
     parser.add_argument("--num_queries", default=256, type=int)
-    
+    parser.add_argument("--num_angular_bins", default=12, type=int)
     
     ############ Optimizer variables ############
     parser.add_argument("--base_lr", default=5e-4, type=float)
@@ -134,31 +130,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--clip_gradient", default=0.1, type=float, help="Max L2 norm of the gradient"
     )
-    
-    
+
     ############ Loss related parameters ############
     ##### Set Loss #####
     parser.add_argument("--matcher_cost_giou", default=2.0, type=float)
     parser.add_argument("--matcher_cost_center", default=0.0, type=float)
     parser.add_argument("--matcher_cost_objectness", default=0.0, type=float)
     ##### Loss Weights #####
-    parser.add_argument("loss_giou_weight", default=0.0, type=float)
-    parser.add_argument("loss_center_weight", default=5.0, type=float)
-    parser.add_argument("loss_angle_cls_weight", default=0.1, type=float)
-    parser.add_argument("loss_angle_reg_weight", default=0.5, type=float)
-    parser.add_argument("loss_size_weight", default=1.0, type=float)
-    parser.add_argument("loss_no_object_weight", default=0.2, type=float)
-    
+    parser.add_argument("--loss_giou_weight", default=0.0, type=float)
+    parser.add_argument("--loss_center_weight", default=5.0, type=float)
+    parser.add_argument("--loss_angle_cls_weight", default=0.1, type=float)
+    parser.add_argument("--loss_angle_reg_weight", default=0.5, type=float)
+    parser.add_argument("--loss_size_weight", default=1.0, type=float)
+    parser.add_argument("--loss_no_object_weight", default=0.2, type=float)
     
     ############ Miscellaneous parameters ############
     parser.add_argument('--debug', type=bool, default=False, help='Flag to degug and visualize')
     parser.add_argument('--ds_number', type=int, default=13, help='Data set index to visualize')
-    
-    
+
     ############ Checkpoint directory ############
     parser.add_argument('--checkpoint_dir', type=str, default=None, help='Directory to save/load checkpoints')
-    
-    
+
     return parser.parse_args()
 
 
@@ -224,14 +216,15 @@ def main() -> None:
         print('Valid input folder path')
         
         # Initialize the dataset for training 
-        datasettester = SereactDataloader(source_path=folder_path, debug=args.debug)
-        datasettester.visualize_data(args.ds_number)
+        dataset = SereactDataloader(source_path=folder_path)
+        if args.debug:
+            dataset.visualize_data(args.ds_number)
         
         # Set the device accordingly
         DEVICE = set_device()
         
         # Since the model training requires GPU, raise error if on CPU
-        if DEVICE == 'cuda':
+        if DEVICE.type == 'cuda':
             torch.cuda.empty_cache()
             torch.cuda.set_device(0)
             print(f"Using GPU: {torch.cuda.get_device_name(0)}")
@@ -240,22 +233,25 @@ def main() -> None:
         
         # Set random seeds for reproducibility
         seed = args.seed
+        # Consistent for numpy
         np.random.seed(seed)
+        # Consistent for pytorch
         torch.manual_seed(seed)
+        # Consistent for GPU
         torch.cuda.manual_seed_all(seed)
         
         # Setup and build the 3DDETR model
         print(f"Setting and building the 3DDETR model")
-        model = build_3ddetr_model(args, None) # Need to add config here or change things
+        model = build_3ddetr_model(args)
         model.to(DEVICE)
         
         # Setup and build the loss object
         print(f"Setting up the loss object")
-        criterion = build_loss_object(args, None) # Need to add config here or change things
-        
+        criterion = build_loss_object(args) # Need to add config here or change things
+
         # Create dataset and dataloaders
         print(f"Initializing the dataset and dataloaders")
-        train_dataset, test_dataset = datasettester.get_datasets() # Need to add this function
+        train_dataset, test_dataset = dataset.get_datasets() # Need to add this function
 
         train_loader = DataLoader(
             train_dataset,
@@ -270,7 +266,7 @@ def main() -> None:
             shuffle=False,
             num_workers=args.num_workers,
         )
-        
+
         # Setup optimizer
         print(f"Setting up the optimizer")
         optimizer = build_optimizer(args, model)
