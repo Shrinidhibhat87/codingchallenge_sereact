@@ -1,5 +1,7 @@
 """
 The file conatins the loss function used to match the 3D bounding box.
+This file is also inspired from the official implementation of 3DDETR.
+Link: https://facebookresearch.github.io/3detr
 """
 
 import torch
@@ -57,13 +59,11 @@ def all_reduce_average(tensor):
 class Matcher_loss(nn.Module):
     def __init__(
         self,
-        cost_class,
         cost_objectness,
         cost_giou,
         cost_center
     ):
         super().__init__()
-        self.cost_class = cost_class
         self.cost_objectness = cost_objectness
         self.cost_giou = cost_giou
         self.cost_center = cost_center
@@ -75,21 +75,17 @@ class Matcher_loss(nn.Module):
         targets
     ):
         # Get the batch size
-        batch_size = outputs["semantic_class_prob"].shape[0]
+        batch_size = outputs["objectness_prob"].shape[0]
         # Get the number of queries
-        num_queries = outputs["semantic_class_prob"].shape[1]
+        num_queries = outputs["objectness_prob"].shape[1]
         
-        # Because the data does not have a class label, you cannot really use the class loss
-        # ngt = targets["gt_box_sem_cls_label"].shape[1]
-        # nactual_gt = targets["nactual_gt"]
-        
-        # Objectness cost (batch, num_queries, 1)
+        # Objectness cost (batch, num_queries, 1). Negative log prob of objectness
         objectness_matching = -outputs["objectness_prob"].unsqueeze(-1)
         
-        # Center cost (batch, num_queries, ngt)
+        # Center cost (batch, num_queries, ngt). Distance b/w predicted and ground truth
         center_matching = outputs['center_dist'].detach()
         
-        # GIoU cost (batch, num_queries, ngt)
+        # GIoU cost (batch, num_queries, ngt). Negative GIoU score.
         giou_matching = -outputs["gious"].detach()
         
         # Calculate the final cost
@@ -106,6 +102,7 @@ class Matcher_loss(nn.Module):
         assignments = []
         
         # Auxiliary variables useful for batched loss computation
+        # If batch_size == batchsize and nprop == num_queries, remove the lines below.
         batchsize, nprop = final_cost.shape[0], final_cost.shape[1]
         per_prop_gt_inds = torch.zeros(
             [batchsize, nprop], dtype=torch.int64, device=outputs["semantic_class_prob"].device
@@ -113,6 +110,8 @@ class Matcher_loss(nn.Module):
         proposal_matched_mask = torch.zeros(
             [batchsize, nprop], dtype=torch.float32, device=outputs["semantic_class_prob"].device
         )
+        
+        # Here, we perform the Hungarian matching
         for b in range(batch_size):
             assign = []
             if "nactual_gt" in targets and targets["nactual_gt"][b] > 0:
@@ -137,11 +136,9 @@ class SetCriterion(nn.Module):
     def __init__(
         self,
         matcher_loss,
-        config,
         loss_weight_dict
     ):
         super().__init__()
-        self.config = config
         self.matcher_loss = matcher_loss
         self.loss_weight_dict = loss_weight_dict
 
@@ -151,26 +148,8 @@ class SetCriterion(nn.Module):
             "loss_center": self.loss_center,
             "loss_size": self.loss_size,
             "loss_giou": self.loss_giou,
-            # this isn't used during training and is logged for debugging.
-            # thus, this loss does not have a loss_weight associated with it.
-            "loss_cardinality": self.loss_cardinality,
         }
-    
-    @torch.no_grad()
-    def loss_cardinality(
-        self,
-        outputs,
-        targets
-    ):
-        # Count the number of predictions that are objects
-        # Cardinality is the error between predicted num of objects and ground truth objects
 
-        predicted_logits = outputs["sem_cls_logits"]
-        # Count the number of predictions that are NOT "no-object" (which is the last class)
-        pred_objects = (predicted_logits.argmax(-1) != predicted_logits.shape[-1] - 1).sum(1)
-        card_err = F.l1_loss(pred_objects.float(), targets["nactual_gt"])
-        return {"loss_cardinality": card_err}
-    
     def loss_angle(
         self,
         outputs,
@@ -340,7 +319,7 @@ class SetCriterion(nn.Module):
             targets["gt_box_corners"],
             targets["nactual_gt"],
             rotated_boxes=torch.any(targets["gt_box_angles"] > 0).item(),
-            needs_grad=(self.loss_weight_dict["loss_giou_weight"] > 0),
+            needs_grad=(self.loss_weight_dict["loss_giou_weight"] > 0), # Check if we really need this parameter.
         )
 
         # Store the GIoU in the outputs dictionary
@@ -421,13 +400,12 @@ class SetCriterion(nn.Module):
         return loss, loss_dict
         
 
-def build_loss_object(args, config):
+def build_loss_object(args):
     """
-    Build the loss object based on the arguments and configuration.
+    Build the loss object based on the arguments.
 
     Args:
         args (argparse.Namespace): The parsed arguments.
-        config (Dict[str, Any]): The configuration dictionary.
 
     Returns:
         nn.Module: The loss object.
@@ -450,7 +428,6 @@ def build_loss_object(args, config):
     
     criterion = SetCriterion(
         matcher_loss=matcher_loss,
-        config=config,
         loss_weight_dict=loss_weight_dict
     )
     
