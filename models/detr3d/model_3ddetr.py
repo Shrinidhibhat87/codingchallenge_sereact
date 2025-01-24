@@ -1,6 +1,7 @@
 """
 The model is inspired by: https://facebookresearch.github.io/3detr
 Although this is not a straight copy paste of the code, most of the code is inspired by the above link
+There are some noteworthy changes that have been made to the code.
 """
 
 import math
@@ -10,8 +11,7 @@ import torch
 import torch.nn as nn
 
 from functools import partial
-from typing import Optional
-from torch import Tensor, nn
+from torch import nn
 
 from models.detr3d.helpers import (ACTIVATION_DICT, NORM_DICT, WEIGHT_INIT_DICT)
 from models.detr3d.transformer_detr import(
@@ -19,7 +19,9 @@ from models.detr3d.transformer_detr import(
     TransformerDecoderLayer, TransformerEncoder,
     TransformerEncoderLayer
 )
+from models.detr3d.pointnet2 import PointnetSAModuleVotes
 from utils.miscellaneous import shift_scale_points, scale_points, farthest_point_sample
+from utils.bounding_box_operations import get_3d_box_batch_tensor, flip_axis_to_camera_tensor
 
 
 
@@ -281,12 +283,9 @@ class PositionEmbeddingCoordsSine(nn.Module):
 class BoxProcessor(object):
     """
     Convert the output of 3D DETR MLP heads into Bounding boxes.
-
-    Args:
-        config (dict): Configuration dictionary containing parameters for box processing.
     """
-    def __init__(self, config):
-        self.config = config
+    def __init__(self):
+        pass
     
     def compute_predicted_center(
         self,
@@ -364,27 +363,7 @@ class BoxProcessor(object):
             angle[mask] = angle[mask] - 2 * np.pi
         
         return angle
-    
-    def compute_objectness_and_class_probability(
-        self,
-        cls_logits
-    ):
-        """
-        Compute objectness and class probability for a binary classification problem.
 
-        Args:
-            cls_logits (Tensor): Logits for the semantic classes of shape (batch_size, num_queries, 2).
-
-        Returns:
-            Tuple[Tensor, Tensor]: Class probabilities and objectness probabilities.
-        """
-        assert cls_logits.shape[-1] == 2, "Semantic class logits must have 2 classes"
-        # Compute objectness probability directly using sigmoid
-        objectness_prob = torch.sigmoid(cls_logits[..., 1])
-        # Class probability for the background class
-        class_prob = 1 - objectness_prob
-        
-        return torch.stack([class_prob, objectness_prob], dim=-1), objectness_prob
     
     def box_parameterization_to_corners(
         self,
@@ -403,11 +382,13 @@ class BoxProcessor(object):
         Returns:
             Tensor: Corner coordinates of the bounding box.
         """
-        return self.config.box_parameterization_to_corners(
-            unnormalized_box_center,
-            unnormalized_box_size,
-            box_angle
-        )
+        # Adjust the centers to the appropriate coordinate system
+        box_center_upright = flip_axis_to_camera_tensor(unnormalized_box_center)
+        
+        # Generate the 3D bounding box corners
+        box_corners = get_3d_box_batch_tensor(unnormalized_box_size, box_angle, box_center_upright)
+
+        return box_corners
 
 
 class Model3DDETR(nn.Module):
@@ -426,12 +407,12 @@ class Model3DDETR(nn.Module):
         pre_encoder,
         encoder,
         decoder,
-        config,
         encoder_dim=256,
         decoder_dim=256,
         position_embedding='Fourier',
         mlp_dropout=0.3,
-        num_queries=256
+        num_queries=256,
+        num_angular_bins=12
     ):
         # Calling parent constructor and initializing the variables
         super().__init__()
@@ -473,25 +454,28 @@ class Model3DDETR(nn.Module):
         self.decoder = decoder
         
         # Need to build MLP heads
-        self.build_mlp_heads(config, decoder_dim, mlp_dropout)
+        self.build_mlp_heads(
+            decoder_dim,
+            mlp_dropout,
+            num_angular_bins
+        )
         
         # Member for number of queries
         self.num_queries = num_queries
         
         # Member for converting MLP output to bounding boxes
-        self.box_processor = BoxProcessor(config)
+        self.box_processor = BoxProcessor()
         
         
     def build_mlp_heads(
         self,
-        config, # No need for this parameter if not dependent on the config file
         decoder_dim,
-        mlp_dropout
+        mlp_dropout,
+        num_angular_bins
     ):
-        """Builds the MLP heads for the 3D detection model.
+        """Builds the MLP heads for the 3D bounding box detection model.
 
         Args:
-            config (dict): Configuration dictionary (not used in this function).
             decoder_dim (int): Dimension of the decoder output.
             mlp_dropout (float): Dropout rate for the MLP layers.
         Returns:
@@ -508,10 +492,6 @@ class Model3DDETR(nn.Module):
             input_dim=decoder_dim
         )
         
-        # There are no semantic classes when detecting the bounding box here
-        # But the two classes that could be detected is background and object
-        semantic_class_head = mlp_func(output_dim=2)
-        
         # The bounding box head is a 3D bounding box
         # MLP head for the various 3D bounding box parameters
         center_head = mlp_func(output_dim=3)
@@ -519,19 +499,18 @@ class Model3DDETR(nn.Module):
         
         # The paper mentions quantizing the angles into 12 bins
         # Angle classification head: Which bin does the angle belong to
-        angle_cls_head = mlp_func(output_dim=12)
+        angle_cls_head = mlp_func(output_dim=num_angular_bins)
         # Angle regression head: Finetune the residual within the classification to give continuous value
-        angle_reg_head = mlp_func(output_dim=12)
+        angle_reg_head = mlp_func(output_dim=num_angular_bins)
         
         # Aggregate the individual heads
         self.mlp_heads = nn.ModuleDict([
-            ("sem_cls_head", semantic_class_head),
             ("center_head", center_head),
             ("size_head", size_head),
             ("angle_cls_head", angle_cls_head),
             ("angle_residual_head", angle_reg_head),
         ])
-    
+
     
     def get_query_embedding(
         self,
@@ -661,16 +640,10 @@ class Model3DDETR(nn.Module):
         
         # Change box_features to ((num_layers x batch), channel, num_queries)
         box_features = box_features.permute(0, 2, 3, 1)
-        num_layers, batch_size, channel, num_queries = (
-            box_features.shape[0],
-            box_features.shape[1],
-            box_features.shape[2],
-            box_features.shape[3]
-        )
+        num_layers, batch_size, channel, num_queries = box_features.shape
         box_features = box_features.reshape(num_layers * batch_size, channel, num_queries)
-        
-        # The MLP head outputs are ((num_layers x batch), num_output, num_queries) so transpose the last two dimensions
-        class_logits = self.mlp_heads["sem_cls_head"](box_features).transpose(1, 2)
+
+        # Bounding box prediction parameters
         center_offset = (
             self.mlp_heads["center_head"](box_features).sigmoid().transpose(1, 2) - 0.5
         )
@@ -681,7 +654,6 @@ class Model3DDETR(nn.Module):
         angle_residual_normalized = self.mlp_heads["angle_residual_head"](box_features).transpose(1, 2)
         
         # Reshape the outputs to (num_layers, batch, num_queries, num_output)
-        class_logits = class_logits.reshape(num_layers, batch_size, num_queries, -1)
         center_offset = center_offset.reshape(num_layers, batch_size, num_queries, -1)
         size_normalized = size_normalized.reshape(num_layers, batch_size, num_queries, -1)
         angle_logits = angle_logits.reshape(num_layers, batch_size, num_queries, -1)
@@ -716,16 +688,8 @@ class Model3DDETR(nn.Module):
                 size_unnormalized,
                 angle_contiguous
             )
-            
-            # We use the below part only for evaluation (matching/mAP) and not loss
-            with torch.no_grad():
-                # Compute objectness and class probability
-                (semantic_class_prob, objectness_prob) = self.box_processor.compute_objectness_and_class_probability(
-                    class_logits[i]
-                )
 
             box_prediction = {
-                "semantic_class_logits": class_logits[i],
                 "center_normalized": center_normalized.contiguous(),
                 "center_unnormalized": center_unnormalized,
                 "size_normalized": size_normalized[i],
@@ -733,8 +697,6 @@ class Model3DDETR(nn.Module):
                 "angle_residual": angle_residual[i],
                 "angle_residual_normalized": angle_residual_normalized[i],
                 "angle_contiguous": angle_contiguous,
-                "objectness_prob": objectness_prob,
-                "semantic_class_prob": semantic_class_prob,
                 "box_corners": box_corners
             }
             
@@ -754,17 +716,18 @@ class Model3DDETR(nn.Module):
         inputs,
         encoder_only=False
     ):
-        """_summary_
+        """Forward pass of the 3D DETR model.
 
         Args:
-            inputs (_type_): _description_
-            encoder_only (bool, optional): _description_. Defaults to False.
+            inputs (Dict[str, Any]): Dictionary with point cloud information.
+            encoder_only (bool, optional): Book to check if this is for encoder only.
+                Defaults to False.
         """
         # Get the point clouds from the input
         point_clouds = inputs["point_clouds"]
         
         # Run it through the encoder
-        encoder_xyz, encoder_features, encoder_indices = self.run_encoder(point_clouds)
+        encoder_xyz, encoder_features, _ = self.run_encoder(point_clouds)
         # Modify the shape encoder features
         encoder_features = self.encoder_decoder_projection(
             encoder_features.permute(1, 2, 0)
@@ -819,8 +782,14 @@ def build_preencoder(args):
         list: A list of integers representing the dimensions of the MLP (Multi-Layer Perceptron) used in the preencoder.
     """
     mlp_dimensions = [3 * int(args.use_color), 64, 128, args.encoder_dim]
-    # something to do with PointnetSAMModuleVotes
-    return mlp_dimensions
+    preencoder = PointnetSAModuleVotes(
+        radius=0.2,
+        nsample=64,
+        npoint=args.preencoder_npoints,
+        mlp=mlp_dimensions,
+        normalize_xyz=True,
+    )
+    return preencoder
 
 # Function to build encoder
 def build_encoder(args):
@@ -830,7 +799,7 @@ def build_encoder(args):
         args: An object containing the following attributes:
             - encoder_type (str): The type of encoder to build. Can be "Vanilla" or "masked".
             - encoder_dim (int): The dimension of the encoder model.
-            - encoder_nhead (int): The number of heads in the multi-head attention mechanism.
+            - encoder_nheads (int): The number of heads in the multi-head attention mechanism.
             - encoder_ffn_dim (int): The dimension of the feedforward network.
             - encoder_dropout (float): The dropout rate.
             - encoder_activation (str): The activation function to use.
@@ -840,19 +809,20 @@ def build_encoder(args):
     Raises:
         ValueError: If the encoder_type is not recognized.
     """
-    if args.encoder_type == "Vanilla":
-        encoder_layer = TransformerEncoderLayer(
-            d_model = args.encoder_dim,
-            nhead=args.encoder_nhead,
-            dim_feedforward=args.encoder_ffn_dim,
-            dropout=args.encoder_dropout,
-            activation=args.encoder_activation
-        )
-        encoder = TransformerEncoder(
-            encoder_layer=encoder_layer,
-            num_layers=args.encoder_num_layers
-        )
-    
+    # if args.encoder_type == "Vanilla":
+    encoder_layer = TransformerEncoderLayer(
+        d_model = args.encoder_dim,
+        nhead=args.encoder_nheads,
+        dim_feedforward=args.encoder_ffn_dim,
+        dropout=args.encoder_dropout,
+        activation=args.encoder_activation
+    )
+    encoder = TransformerEncoder(
+        encoder_layer=encoder_layer,
+        num_layers=args.encoder_num_layers
+    )
+    # Since we will mostly be using vanilla, we should consider simply removing this masked part
+    """
     elif args.encoder_type in ["masked"]:
         encoder_layer = TransformerEncoderLayer(
             d_model = args.encoder_dim,
@@ -872,7 +842,8 @@ def build_encoder(args):
             masking_radius=masking_radius,
         )
     else:
-        raise ValueError(f"Unknown encoder type: {args.encoder_type}")
+        raise ValueError(f"Unknown encoder type: {args.encoder_type}")    
+    """
     
     return encoder
 
@@ -906,7 +877,7 @@ def build_decoder(args):
 
 
 # Function to build the 3D DETR model
-def build_3ddetr_model(args, config):
+def build_3ddetr_model(args):
     """
     Build the 3DDETR model and its output processor.
     Args:
@@ -916,7 +887,6 @@ def build_3ddetr_model(args, config):
             - position_embedding (str): Type of position embedding to use.
             - mlp_dropout (float): Dropout rate for the MLP layers.
             - num_queries (int): Number of queries for the decoder.
-        config (dict): Configuration dictionary for the model and processor.
     Returns:
         tuple: A tuple containing:
             - model (Model3DDETR): The constructed 3DDETR model.
@@ -929,13 +899,14 @@ def build_3ddetr_model(args, config):
         pre_encoder=pre_encoder,
         encoder=encoder,
         decoder=decoder,
-        config=config,
         encoder_dim=args.encoder_dim,
         decoder_dim=args.decoder_dim,
         position_embedding=args.position_embedding,
         mlp_dropout=args.mlp_dropout,
-        num_queries=args.num_queries
+        num_queries=args.num_queries,
+        num_angular_bins=args.num_angular_bins
     )
-    output_processor = BoxProcessor(config=config)
+    # Not sure if we need the output_processor, so simply comment this out now
+    # output_processor = BoxProcessor(config=config)
     
-    return model, output_processor
+    return model
