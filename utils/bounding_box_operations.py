@@ -1,6 +1,7 @@
 """
-Utility file for Bouning box related operations
+Utility file for Bouning box related operations.
 """
+
 import torch
 import numpy as np
 
@@ -260,7 +261,8 @@ def generalized_box3d_iou_cython(
         gious *= mask
     return gious
 
-
+"""
+# Results in a runtime error, which is why commenting this code out for now.
 def generalized_box3d_iou_tensor(
     corners1: torch.Tensor,
     corners2: torch.Tensor,
@@ -268,14 +270,14 @@ def generalized_box3d_iou_tensor(
     rotated_boxes: bool = True,
     return_inter_vols_only: bool = False,
 ):
-    """
+    # Need comment lines here
     Input:
         corners1: torch Tensor (B, K1, 8, 3), assume up direction is negative Y
         corners2: torch Tensor (B, K2, 8, 3), assume up direction is negative Y
         Assumes that the box is only rotated along Z direction
     Returns:
         B x K1 x K2 matrix of generalized IOU by approximating the boxes to be axis aligned
-    """
+    # Need comment lines here
     assert len(corners1.shape) == 4
     assert len(corners2.shape) == 4
     assert corners1.shape[2] == 8
@@ -366,6 +368,8 @@ def generalized_box3d_iou_tensor(
 
 generalized_box3d_iou_tensor_jit = torch.jit.script(generalized_box3d_iou_tensor)
 
+"""
+
 def generalized_box3d_iou(
     corners1: torch.Tensor,
     corners2: torch.Tensor,
@@ -374,12 +378,14 @@ def generalized_box3d_iou(
     return_inter_vols_only: bool = False,
     needs_grad: bool = False,
 ):
+    # May need to remove the needs_grad parameter so GIoU is calculated with cython and not tensor_jit
     if needs_grad is True or box_intersection is None:
         context = torch.enable_grad if needs_grad else torch.no_grad
         with context():
-            return generalized_box3d_iou_tensor_jit(
-                corners1, corners2, nums_k2, rotated_boxes, return_inter_vols_only
-            )
+            return None
+            #return generalized_box3d_iou_tensor_jit(
+                #corners1, corners2, nums_k2, rotated_boxes, return_inter_vols_only
+            #)
 
     else:
         # Cythonized implementation of GIoU
@@ -387,3 +393,69 @@ def generalized_box3d_iou(
             return generalized_box3d_iou_cython(
                 corners1, corners2, nums_k2, rotated_boxes, return_inter_vols_only
             )
+
+def flip_axis_to_camera_tensor(pc):
+    """Flip X-right, Y-forward, Z-up to X-right, Y-down, Z-forward."""
+    pc2 = torch.clone(pc)
+    # cam X,Y,Z = depth X,-Z,Y
+    pc2[..., [0, 1, 2]] = pc2[..., [0, 2, 1]]
+    pc2[..., 1] *= -1
+    return pc2
+
+
+def roty_batch_tensor(angle):
+    """
+    Compute rotation matrices around the Y-axis (yaw).
+    
+    Args:
+        angle (Tensor): Yaw angles in radians (N,).
+    
+    Returns:
+        Tensor: Rotation matrices (N, 3, 3).
+    """
+    cos_theta = torch.cos(angle)
+    sin_theta = torch.sin(angle)
+    
+    # Create the rotation matrix
+    R = torch.zeros((angle.shape[0], 3, 3), device=angle.device)
+    R[:, 0, 0] = cos_theta
+    R[:, 0, 2] = sin_theta
+    R[:, 1, 1] = 1.0
+    R[:, 2, 0] = -sin_theta
+    R[:, 2, 2] = cos_theta
+    
+    return R
+
+def get_3d_box_batch_tensor(box_size, angle, center):
+    """
+    Generate 3D bounding box corners based on size, rotation, and center.
+    
+    Args:
+        box_size (Tensor): Size of the bounding box (N, 3) [length, height, width].
+        angle (Tensor): Rotation angle in radians (N,).
+        center (Tensor): Center coordinates of the bounding box (N, 3).
+    
+    Returns:
+        Tensor: 3D corner coordinates (N, 8, 3).
+    """
+    assert box_size.ndim == 2 and angle.ndim == 1 and center.ndim == 2
+
+    # Compute rotation matrices for the angles
+    R = roty_batch_tensor(angle)
+
+    # Bounding box dimensions
+    l = torch.unsqueeze(box_size[..., 0], -1)
+    w = torch.unsqueeze(box_size[..., 1], -1)
+    h = torch.unsqueeze(box_size[..., 2], -1)
+
+    # Predefine 8 corners in the local coordinate system
+    corners_3d = torch.zeros((box_size.shape[0], 8, 3), device=box_size.device)
+    corners_3d[:, :, 0] = torch.cat([l / 2, l / 2, -l / 2, -l / 2, l / 2, l / 2, -l / 2, -l / 2], dim=-1)
+    corners_3d[:, :, 1] = torch.cat([h / 2, h / 2, h / 2, h / 2, -h / 2, -h / 2, -h / 2, -h / 2], dim=-1)
+    corners_3d[:, :, 2] = torch.cat([w / 2, -w / 2, -w / 2, w / 2, w / 2, -w / 2, -w / 2, w / 2], dim=-1)
+
+    # Apply rotation and translation to the corners
+    corners_3d = torch.einsum("bij,bkj->bki", R, corners_3d) 
+    corners_3d += center.unsqueeze(1)
+
+    return corners_3d

@@ -1,15 +1,16 @@
 """
 Function that contains the dataloader class.
 To create dataloaders, inherit abstract Dataset class
-Need to override __len__() and __getitem__() methods
+Need to override __len__() and __getitem__() methods.
 """
 
 import os
-from typing import Dict
-
+import torch
 import numpy as np
+from typing import Dict
 from PIL import Image
 from torch.utils.data import Dataset
+from sklearn.model_selection import train_test_split
 
 from utils.visualize_image import visualize_masks_on_image
 from utils.visualize_point_cloud import visualize_bounding_box, visualize_point_cloud
@@ -162,7 +163,6 @@ class SereactDataloader(Dataset):
         self,
         source_path: str,
         transform=None,
-        debug=False,
         augment=False
     ) -> None:
         """Constructor method
@@ -176,7 +176,6 @@ class SereactDataloader(Dataset):
         self.source_path = source_path
         self.tranform = transform
         self.folderpath = os.listdir(source_path)
-        self.debug = debug
         self.augment = augment
         self.random_cuboid = RandomCuboid(
             min_points=30000,
@@ -279,7 +278,32 @@ class SereactDataloader(Dataset):
             pcd, bbox_3d, _ = self.random_cuboid(pcd, bbox_3d)
             
         return pcd, bbox_3d
+    
+    def get_datasets(
+        self,
+        test_size: float = 0.2,
+        random_seed: int = 40
+    ):
+        """Splits the dataset into training and testing datasets.
 
+        Args:
+            test_size (float, optional): Proportion of the dataset to include in the test split. Defaults to 0.2.
+            random_seed (int, optional): Random seed for reproducibility. Defaults to 40.
+
+        Returns:
+            tuple: Training and testing datasets.
+        """
+        # Get the indices from the folderpath
+        indices = list(range(len(self.folderpath)))
+        # Split using the sklearn library
+        train_indices, test_indices = train_test_split(
+            indices, test_size=test_size, random_state=random_seed
+        )
+        # Return the training and testing datasets
+        train_dataset = torch.utils.data.Subset(self, train_indices)
+        test_dataset = torch.utils.data.Subset(self, test_indices)
+        
+        return train_dataset, test_dataset
 
     def visualize_data(self, index: int) -> None:
         sample = self[index]
@@ -288,7 +312,6 @@ class SereactDataloader(Dataset):
         bbox3d = sample['bbox3d']
         mask = sample['mask']
 
-        if self.debug:
-            visualize_masks_on_image(image=image, masks=mask)
-            visualize_point_cloud(pc_input=pcd, color_image=image)
-            visualize_bounding_box(pc_input=pcd, bbox_points=bbox3d, color_image=image)
+        visualize_masks_on_image(image=image, masks=mask)
+        visualize_point_cloud(pc_input=pcd, color_image=image)
+        visualize_bounding_box(pc_input=pcd, bbox_points=bbox3d, color_image=image)
