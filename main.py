@@ -15,7 +15,7 @@ from dataloader import SereactDataloader
 from models.detr3d.model_3ddetr import build_3ddetr_model
 from losses.loss_3ddetr import build_loss_object
 from trainer.trainer import train, validate
-from utils.miscellaneous import worker_init_fn
+from utils.miscellaneous import worker_init_fn, collate_fn
 from utils.mean_iou_evaluation import IoUEvaluator
 
 
@@ -154,7 +154,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--test_split', type=float, default=0.2, help='Test split ratio')
 
     ############ Checkpoint directory ############
-    parser.add_argument('--checkpoint_dir', type=str, default="/home/s.bhat/Checkpoints/3D_Bbox/", help='Directory to save/load checkpoints')
+    # parser.add_argument('--checkpoint_dir', type=str, default="/home/s.bhat/Checkpoints/3D_Bbox/", help='Directory to save/load checkpoints')
+    parser.add_argument('--checkpoint_dir', type=str, default="/home/shrinidhibhat/sereact_coding_challenge/Checkpoints/3D_Bbox", help='Directory to save/load checkpoints')
 
     return parser.parse_args()
 
@@ -221,7 +222,7 @@ def main() -> None:
         print('Valid input folder path')
         
         # Initialize the dataset for training 
-        dataset = SereactDataloader(source_path=folder_path)
+        dataset = SereactDataloader(source_path=folder_path, debug=args.debug)
         if args.debug:
             dataset.visualize_data(args.ds_number)
         
@@ -264,6 +265,7 @@ def main() -> None:
             train_dataset,
             batch_size=args.batch_size,
             shuffle=True,
+            collate_fn=collate_fn,
             num_workers=args.num_workers,
             worker_init_fn=worker_init_fn,
         )
@@ -271,6 +273,7 @@ def main() -> None:
             test_dataset,
             batch_size=args.batch_size,
             shuffle=False,
+            collate_fn=collate_fn,
             num_workers=args.num_workers,
         )
 
