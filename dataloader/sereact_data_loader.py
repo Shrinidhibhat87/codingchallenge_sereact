@@ -207,7 +207,7 @@ class SereactDataloader(Dataset):
         # 4) Point cloud information "pc.npy"
 
         # 1) Load RGB image
-        image = Image.open(os.path.join(subfolder_path, 'rgb.jpg')).convert('RGB')
+        image = np.array(Image.open(os.path.join(subfolder_path, 'rgb.jpg')).convert('RGB'))
 
         # 2) 3D bounding box
         bbox_3d = np.load(os.path.join(subfolder_path, 'bbox3d.npy'))
@@ -307,7 +307,7 @@ class SereactDataloader(Dataset):
 
     def visualize_data(self, index: int) -> None:
         sample = self[index]
-        image = sample['rgb']
+        image = Image.fromarray(sample['rgb'])
         pcd = sample['pcd']
         bbox3d = sample['bbox3d']
         mask = sample['mask']
