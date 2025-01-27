@@ -6,3 +6,4 @@ scipy==1.15.1
 shapely==2.0.6
 torch>=2.4
 torchvision>=0.13
+wandb==0.19.4
