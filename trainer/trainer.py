@@ -76,8 +76,9 @@ def train_one_epoch(
         batch_start_time = time.time()
 
         # Move input data to the specified device
-        inputs = batch["input"].to(device)
-        gt_boxes = batch["gt_boxes"].to(device)
+        inputs = [obj.to(device) for obj in batch["pcd_tensor"]]
+        gt_bboxes = [obj.to(device) for obj in batch["bbox3d_tensor"]]
+
 
         # Forward pass
         optimizer.zero_grad()
@@ -86,7 +87,7 @@ def train_one_epoch(
         pred_boxes = outputs["box_corners"]
 
         # Compute loss
-        loss = metric(pred_boxes, gt_boxes)
+        loss = metric(pred_boxes, gt_bboxes)
         # Get total loss to back propagate
         loss.backward()
 
@@ -103,7 +104,7 @@ def train_one_epoch(
         epoch_loss += loss.item()
 
         # Update IoU evaluator
-        iou_evaluator.update(pred_boxes.cpu().detach().numpy(), gt_boxes.cpu().detach().numpy())
+        iou_evaluator.update(pred_boxes.cpu().detach().numpy(), gt_bboxes.cpu().detach().numpy())
 
         # End timer and accumulate batch time
         batch_time_accum += time.time() - batch_start_time
@@ -205,11 +206,11 @@ def validate(
             # Will definitely have to change a few things here.
             # Refer to /home/s.bhat/Coding/codingchallenge_sereact/models/detr3d/model_3ddetr.py line 692
             pred_boxes = outputs["outputs"]["boxes"]
-            gt_boxes = batch_data["bbox_3d"]
+            gt_bboxes = batch_data["bbox_3d"]
             # iou_evaluator.update(outputs["outputs"], batch_data)
             iou_evaluator.update(
                 pred_boxes.cpu().detach().numpy(),
-                gt_boxes.cpu().detach().numpy()
+                gt_bboxes.cpu().detach().numpy()
             )
 
         # Track time per batch
