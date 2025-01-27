@@ -106,3 +106,24 @@ def farthest_point_sample(xyz, npoint):
         farthest = torch.max(distance, -1)[1]  # Select the next farthest point
 
     return centroids
+
+
+def collate_fn(batch):
+    """
+    Collate function to be used with DataLoader to stack the data in the batch.
+
+    Args:
+        batch (list): A list of tuples containing the data and label.
+
+    Returns:
+        tuple: A tuple containing the stacked data and label.
+    """
+    # Load PCD tensors
+    pcd_tensors = [item['pcd_tensor'] for item in batch]
+    # Load Bbox tensors
+    bbox_tensors = [item['bbox3d_tensor'] for item in batch]
+
+    return {
+        'pcd_tensor': pcd_tensors, # Cant stack here because of different number of points
+        'bbox3d_tensor': bbox_tensors
+    }
