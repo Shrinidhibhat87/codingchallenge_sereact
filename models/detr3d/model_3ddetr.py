@@ -713,56 +713,71 @@ class Model3DDETR(nn.Module):
         
     def forward(
         self,
-        inputs,
+        inputs_list,
         encoder_only=False
     ):
         """Forward pass of the 3D DETR model.
 
         Args:
-            inputs (Dict[str, Any]): Dictionary with point cloud information.
+            inputs (List[Dict[str, Any]]): Dictionary with point cloud information.
             encoder_only (bool, optional): Book to check if this is for encoder only.
                 Defaults to False.
         """
-        # Get the point clouds from the input
-        point_clouds = inputs["point_clouds"]
+        # List to store batch predictions
+        batch_predictions = []
+
+        for input in inputs_list:
+            # Get the point cloud from the input
+            point_clouds = input["pcd_tensor"]
+            
+            # Run it through the encoder
+            encoder_xyz, encoder_features, _ = self.run_encoder(point_clouds)
+            # Modify the shape encoder features
+            encoder_features = self.encoder_decoder_projection(
+                encoder_features.permute(1, 2, 0)
+            ).permute(2, 0, 1)
+            
+            # Note down the shape of the intermediate features
+            if encoder_only:
+                batch_predictions.append(
+                    encoder_xyz, encoder_features.transpose(0, 1)
+                )
+                continue
+            
+            # Append the Point cloud dimensions
+            # The below values needs to be hardcoded or gotten from argparse
+            point_cloud_dims = [input["point_cloud_dims_min"], input["point_cloud_dims_max"]]
+
+            # Get the query embeddings
+            query_xyz, query_embeddings = self.get_query_embedding(encoder_xyz, point_cloud_dims)
+
+            # Query embedding shape: (batch_size, channels, num_points)
+            encoder_pos = self.positional_embedding(encoder_xyz, input_range=point_cloud_dims)
+
+            # The decoder expects the query embeddings to be in the shape (num_points, batch_size, channels)
+            encoder_pos = encoder_pos.permute(2, 0, 1)
+            # Similarly, the query embeddings are in the shape (batch_size, channels, num_points)
+            query_embeddings = query_embeddings.permute(2, 0, 1)
+            target = torch.zeros_like(query_embeddings)
+
+            # Get the box features
+            box_features = self.decoder(
+                target,
+                encoder_features,
+                query_embeddings, # Query position is embeddings
+                encoder_pos # Position is encoder positional embedding
+            )[0]
+
+            # Predict the bounding boxes
+            box_predictions = self.get_box_prediction(query_xyz, point_cloud_dims, box_features)
+
+            # Add the prediction for this sample to the batch
+            batch_predictions.append(box_predictions)
         
-        # Run it through the encoder
-        encoder_xyz, encoder_features, _ = self.run_encoder(point_clouds)
-        # Modify the shape encoder features
-        encoder_features = self.encoder_decoder_projection(
-            encoder_features.permute(1, 2, 0)
-        ).permute(2, 0, 1)
-        
-        # Note down the shape of the intermediate features
-        if encoder_only:
-            return encoder_xyz, encoder_features.transpose(0, 1)
-        
-        # Append the Point cloud dimensions
-        point_cloud_dims = [inputs["point_cloud_dims_min"], inputs["point_cloud_dims_max"]]
-        
-        # Get the query embeddings
-        query_xyz, query_embeddings = self.get_query_embedding(encoder_xyz, point_cloud_dims)
-        # Query embedding shape: (batch_size, channels, num_points)
-        encoder_pos = self.positional_embedding(encoder_xyz, input_range=point_cloud_dims)
-        
-        # The decoder expects the query embeddings to be in the shape (num_points, batch_size, channels)
-        encoder_pos = encoder_pos.permute(2, 0, 1)
-        # Similarly, the query embeddings are in the shape (batch_size, channels, num_points)
-        query_embeddings = query_embeddings.permute(2, 0, 1)
-        target = torch.zeros_like(query_embeddings)
-        
-        # Get the box features
-        box_features = self.decoder(
-            target,
-            encoder_features,
-            query_embeddings, # Query position is embeddings
-            encoder_pos # Position is encoder positional embedding
-        )[0]
-        
-        # Predict the bounding boxes
-        box_predictions = self.get_box_prediction(query_xyz, point_cloud_dims, box_features)
-        
-        return box_predictions
+        # Stack predictions into a single tensor or return as a list
+        # The below logic can be checked once we do the forward pass
+        return torch.stack(batch_predictions) if isinstance(batch_predictions[0], torch.Tensor) else batch_predictions
+
 
 """
 All the code for the set-aggregation downsampling operation as mentioned in the PointNet++ paper
