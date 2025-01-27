@@ -1,3 +1,4 @@
 data/*
 .vscode/*
+wandb/*
 **/__pycache__
