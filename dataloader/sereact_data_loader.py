@@ -163,6 +163,7 @@ class SereactDataloader(Dataset):
         self,
         source_path: str,
         transform=None,
+        debug=False,
         augment=False
     ) -> None:
         """Constructor method
@@ -177,6 +178,7 @@ class SereactDataloader(Dataset):
         self.tranform = transform
         self.folderpath = os.listdir(source_path)
         self.augment = augment
+        self.debug = debug
         self.random_cuboid = RandomCuboid(
             min_points=30000,
             aspect=0.75,
@@ -211,19 +213,36 @@ class SereactDataloader(Dataset):
 
         # 2) 3D bounding box
         bbox_3d = np.load(os.path.join(subfolder_path, 'bbox3d.npy'))
+        # Have a tensor form of the bounding box
+        bbox_3d_tensor = torch.tensor(bbox_3d, dtype=torch.float32)
 
         # 3) Mask information
         mask = np.load(os.path.join(subfolder_path, 'mask.npy'))
 
         # 4) Point cloud
         pcd = np.load(os.path.join(subfolder_path, 'pc.npy'))
+        # Have a tensor form of the point cloud
+        pcd_tensor = torch.tensor(pcd, dtype=torch.float32).view(3, -1)
         
         # Check if asked to apply augmentation.
         if self.augment:
             pcd, bbox_3d = self.apply_augmentation(pcd, bbox_3d)
 
-        # Once loaded, store them in a dict and return them
-        data_dict = {'rgb': image, 'bbox3d': bbox_3d, 'mask': mask, 'pcd': pcd}
+        # Once loaded, store them in a dict and return them all if the debug is ON
+        if self.debug:
+            data_dict = {
+                'rgb': image,
+                'bbox3d': bbox_3d,
+                'mask': mask,
+                'pcd': pcd,
+                'pcd_tensor': pcd_tensor,
+                'bbox3d_tensor': bbox_3d_tensor
+            }
+        else:
+            data_dict = {
+                'pcd_tensor': pcd_tensor,
+                'bbox3d_tensor': bbox_3d_tensor
+            }
 
         return data_dict
     
