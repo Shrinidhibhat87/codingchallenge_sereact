@@ -2,7 +2,6 @@
 Python file that contains the training method, Logger details and also the optimizer
 """
 
-import numpy as np
 import torch
 import os
 import time
@@ -43,6 +42,7 @@ def train_one_epoch(
     device,
     epoch,
     iou_evaluator,
+    scheduler,
     log_interval=10,
 ):
     """
@@ -68,8 +68,13 @@ def train_one_epoch(
 
     # Reset IoU evaluator for the epoch
     iou_evaluator.reset()
+    batch_time_accum = 0.0
 
     for batch_idx, batch in enumerate(data_loader, start=1):
+
+        # Start timer
+        batch_start_time = time.time()
+
         # Move input data to the specified device
         inputs = batch["input"].to(device)
         gt_boxes = batch["gt_boxes"].to(device)
@@ -82,8 +87,17 @@ def train_one_epoch(
 
         # Compute loss
         loss = metric(pred_boxes, gt_boxes)
+        # Get total loss to back propagate
         loss.backward()
+
+        # Since norm clipping is necessary, incorporate that
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1, norm_type=2.0)
+
+        # Parameter update based on the gradients
         optimizer.step()
+
+        # learning rate scheduler
+        scheduler.step()
 
         # Update epoch loss
         epoch_loss += loss.item()
@@ -91,11 +105,14 @@ def train_one_epoch(
         # Update IoU evaluator
         iou_evaluator.update(pred_boxes.cpu().detach().numpy(), gt_boxes.cpu().detach().numpy())
 
+        # End timer and accumulate batch time
+        batch_time_accum += time.time() - batch_start_time
+
         # Logging at intervals
         if batch_idx % log_interval == 0 or batch_idx == total_batches:
             mean_loss = epoch_loss / batch_idx
-            elapsed_time = time.time() - start_time
-            eta = (elapsed_time / batch_idx) * (total_batches - batch_idx)
+            avg_batch_time = batch_time_accum / log_interval
+            eta = avg_batch_time * (total_batches - batch_idx)
             eta_str = str(datetime.timedelta(seconds=int(eta)))
 
             print(
@@ -108,8 +125,11 @@ def train_one_epoch(
                 "epoch": epoch,
                 "batch": batch_idx,
                 "loss": mean_loss,
-                "batch_time": elapsed_time / batch_idx,
+                "batch_time": avg_batch_time,
             })
+
+            # Reset batch time accumulator
+            batch_time_accum = 0.0
 
     # Compute IoU metrics for the epoch
     metrics = iou_evaluator.compute_metrics()
@@ -119,8 +139,10 @@ def train_one_epoch(
     wandb.log({
         "epoch": epoch,
         "mean_loss": mean_loss,
+        "learning_rate": optimizer.param_groups[0]["lr"],
         "mean_iou": metrics["mean_iou"],
-        **{f"iou@{t}": acc for t, acc in metrics["threshold_accuracy"].items()},
+        "epoch_time": time.time() - start_time,
+        **{f"iou@{t}": acc for t, acc in metrics["threshold_accuracy"].items()}
     })
 
     # Print final metrics
@@ -134,8 +156,8 @@ def validate(
     model,
     data_loader,
     device,
-    criterion=None,
-    iou_evaluator=None,
+    criterion,
+    iou_evaluator=IoUEvaluator(),
 ):
     """
     Validation function to evaluate the model using IoU metrics.
@@ -154,6 +176,7 @@ def validate(
     model.eval()
 
     # Initialize metrics and timers
+    iou_evaluator.reset()
     metrics = {"iou": {}, "loss": 0.0}
     total_loss = 0.0
     num_batches = len(data_loader)
@@ -165,24 +188,29 @@ def validate(
         start_time = time.time()
 
         # Move data to the target device
-        for key in batch_data:
-            batch_data[key] = batch_data[key].to(device)
+        batch_data = {key: val.to(device) for key, val in batch_data.items()}
 
-        # Forward pass
-        inputs = {"point_clouds": batch_data["point_clouds"]}
+        # Forward pass.
+        inputs = {"point_clouds": batch_data["pcd"]}
         outputs = model(inputs)
 
         # Compute loss (if criterion is provided)
         if criterion:
-            loss, _ = criterion(outputs, batch_data)
+            loss, loss_dict = criterion(outputs, batch_data)
+            # Maybe we should have to use the loss_dict somewhere or somehow
             total_loss += loss.item()
 
         # Update IoU metrics
         if iou_evaluator:
-            pred_boxes = outputs["outputs"]["boxes"] # Assuming predictions include 'boxes'
-            gt_boxes = batch_data["boxes"] # Assuming ground truths include 'boxes'
+            # Will definitely have to change a few things here.
+            # Refer to /home/s.bhat/Coding/codingchallenge_sereact/models/detr3d/model_3ddetr.py line 692
+            pred_boxes = outputs["outputs"]["boxes"]
+            gt_boxes = batch_data["bbox_3d"]
             # iou_evaluator.update(outputs["outputs"], batch_data)
-            iou_evaluator.update(pred_boxes.cpu().detach().numpy(), gt_boxes.cpu().detach().numpy())
+            iou_evaluator.update(
+                pred_boxes.cpu().detach().numpy(),
+                gt_boxes.cpu().detach().numpy()
+            )
 
         # Track time per batch
         time_per_batch.append(time.time() - start_time)
@@ -202,8 +230,10 @@ def validate(
     if criterion:
         metrics["loss"] = total_loss / num_batches
 
-    print("Validation completed.")
+    print("Validation completed!")
+
     print(f"IoU Metrics: {metrics['iou']}")
+
     if criterion:
         print(f"Average Loss: {metrics['loss']:.4f}")
 
@@ -215,8 +245,9 @@ def train(
     model,
     optimizer,
     criterion,
-    config,
-    data_loader,
+    train_dataloader,
+    validate_dataloader,
+    scheduler,
     device,
 ):
     """
@@ -228,46 +259,46 @@ def train(
         optimizer: Optimizer used for updating model weights.
         criterion: Loss function used for training.
         config: Configuration file or dictionary with model/data parameters.
-        data_loader: Dictionary with "train" and "val" DataLoaders.
+        train_dataloader: Train dataloader that is passed.
+        validate_dataloader: Validation dataloader that is passed.
         device: Torch device (CPU or GPU) to run the model on.
     """
     # Get iterations per epoch for train and validation
-    num_iterations_per_epoch = len(data_loader["train"])
-    num_iterations_per_validation = len(data_loader["val"])
+    num_iterations_per_epoch = len(train_dataloader)
+    num_iterations_per_validation = len(validate_dataloader)
 
     # Display training details
     print(f"Model: {model}")
     print(f"Optimizer: {optimizer}")
-    print(f"Training starts at epoch {args.start_epoch} and ends at epoch {args.max_epoch}")
+    print(f"Scheduler: {scheduler}")
+    print(f"Criterion: {criterion}")
+    print(f"Training starts at epoch {args.start_epoch} and ends at epoch {args.max_epochs}")
     print(f"Iterations per training epoch: {num_iterations_per_epoch}")
     print(f"Iterations per validation epoch: {num_iterations_per_validation}")
 
     # Paths for saving final evaluation results and weights
+    # Here is where if the folder does not exist, we need to create a folder with the time stamp
+    if not os.path.exists(args.checkpoint_dir):
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.checkpoint_dir = os.path.join(args.checkpoint_dir, f"bbox_detection_{timestamp}")
+        os.makedirs(args.checkpoint_dir)
     final_eval_path = os.path.join(args.checkpoint_dir, "final_eval.txt")
     final_weights_path = os.path.join(args.checkpoint_dir, "final_weights.pth")
 
-    # Check if training was completed previously
-    if os.path.isfile(final_eval_path):
-        print(f"Training already completed. Found file: {final_eval_path}. Skipping...")
-        return
-
-    # Initialize Weights and Biases
-    wandb.init(project="model_training", config=args)
-    wandb.watch(model, log="all")
-
     # Main training loop
-    for epoch in range(args.start_epoch, args.max_epoch):
-        print(f"Starting epoch {epoch}/{args.max_epoch}")
+    for epoch in range(args.start_epoch, args.max_epochs):
+        print(f"Starting epoch {epoch}/{args.max_epochs}")
 
         # Train for one epoch
         train_metrics = train_one_epoch(
             model=model,
             optimizer=optimizer,
-            criterion=criterion,
-            data_loader=data_loader["train"],
+            metric=criterion,
+            data_loader=train_dataloader,
             device=device,
             epoch=epoch,
             iou_evaluator=IoUEvaluator(iou_thresholds=[0.25, 0.5]),
+            scheduler=scheduler
         )
 
         # Log training metrics
@@ -290,7 +321,7 @@ def train(
             print(f"Running validation for epoch {epoch}")
             val_metrics = validate(
                 model=model,
-                data_loader=data_loader["val"],
+                data_loader=validate_dataloader,
                 device=device,
                 criterion=criterion,
                 iou_evaluator=IoUEvaluator(iou_thresholds=[0.25, 0.5]),
