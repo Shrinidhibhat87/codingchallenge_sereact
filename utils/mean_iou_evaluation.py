@@ -3,6 +3,9 @@ Utility file that contains the IoU evaluator class.
 """
 
 import numpy as np
+from shapely.geometry import Polygon
+from shapely.affinity import scale
+
 
 class IoUEvaluator:
     """
@@ -36,6 +39,8 @@ class IoUEvaluator:
     def calculate_iou(box_a, box_b):
         """
         Compute IoU between two 3D bounding boxes.
+        Static method does not take any self, cls variable.
+        Essentially, it is a utility function that can be moved elsewhere.
 
         Args:
             box_a (ndarray): Predicted bounding box of shape (8, 3).
@@ -44,11 +49,27 @@ class IoUEvaluator:
         Returns:
             float: IoU value between the two boxes.
         """
-        # Placeholder for IoU computation. Replace this with a 3D IoU calculation.
-        # For simplicity, assuming a dummy IoU calculation here.
-        intersection = np.random.random()  # Replace with real intersection volume computation.
-        union = np.random.random() + intersection  # Replace with real union volume computation.
+        # Use of external libraries to calculate the IoU (currently shapely).
+        # There is a possibility to make use of more complicated, but accurate IoU calc.
+        # https://github.com/facebookresearch/pytorch3d
+        # https://pytorch3d.org/docs/iou3d
+
+        # Using shapely, we are converting 3D bounding boxes to 2D polygons after projections.
+        # Therefore we assume here that assumes z-plane is dominant
+        # projecting the predicted bounding box onto the x-y plane
+        predicted_polygon = Polygon(box_a[:, :2])
+        ground_truth_polygon = Polygon(box_b[:, :2])
+
+        # Calculate the IoU
+        intersection = predicted_polygon.intersection(ground_truth_polygon).area
+        union = predicted_polygon.union(ground_truth_polygon).area
+
+        # Edge case if there is no union
+        if union == 0:
+            return 0.0
+
         return intersection / union
+
 
     def update(self, pred_boxes, gt_boxes):
         """
@@ -82,6 +103,7 @@ class IoUEvaluator:
             thresh: hits / self.total_boxes if self.total_boxes > 0 else 0
             for thresh, hits in self.threshold_hits.items()
         }
+
         return {"mean_iou": mean_iou, "threshold_accuracy": threshold_accuracy}
 
     def __str__(self):
@@ -90,4 +112,5 @@ class IoUEvaluator:
         thresh_str = ", ".join(
             [f"IoU@{t}: {metrics['threshold_accuracy'][t]:.2f}" for t in self.iou_thresholds]
         )
+
         return f"Mean IoU: {metrics['mean_iou']:.2f}, {thresh_str}"
