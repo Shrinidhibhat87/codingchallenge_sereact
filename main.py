@@ -7,14 +7,16 @@ import os
 import torch
 import sys
 import numpy as np
+import wandb
 from typing import List
 from torch.utils.data import DataLoader
 
 from dataloader import SereactDataloader
 from models.detr3d.model_3ddetr import build_3ddetr_model
 from losses.loss_3ddetr import build_loss_object
-from trainer.trainer import train
+from trainer.trainer import train, validate
 from utils.miscellaneous import worker_init_fn
+from utils.mean_iou_evaluation import IoUEvaluator
 
 
 
@@ -88,12 +90,13 @@ def parse_args() -> argparse.Namespace:
 
     ############ Training Parameters ############
     parser.add_argument('--seed', type=int, default=40, help='Random seed for reproducibility')
-    parser.add_argument('--epochs', type=int, default=10, help='Number of epochs to train')
+    parser.add_argument('--start_epoch', type=int, default=0, help='Epoch to start training from')
+    parser.add_argument('--max_epochs', type=int, default=10, help='Number of epochs to train')
     parser.add_argument('--batch_size', type=int, default=2, help='Batch size for training')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for dataloader')    
     
     ############ Testing Parameters ############
-    parser.add_argument('--test_only', type=bool, default=False, help='Flag to run test only')
+    parser.add_argument('--valid_only', type=bool, default=False, help='Flag to run validation only')
 
     ############ Model parameters ############
     ########## Preencoder and Encoder parameters ##########
@@ -118,6 +121,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mlp_dropout", default=0.3, type=float)
     parser.add_argument("--num_queries", default=256, type=int)
     parser.add_argument("--num_angular_bins", default=12, type=int)
+    parser.add_argument("--pretrained_weights_path", default=None, type=str, help="Path to pretrained weights")
     
     ############ Optimizer variables ############
     parser.add_argument("--base_lr", default=5e-4, type=float)
@@ -147,9 +151,10 @@ def parse_args() -> argparse.Namespace:
     ############ Miscellaneous parameters ############
     parser.add_argument('--debug', type=bool, default=False, help='Flag to degug and visualize')
     parser.add_argument('--ds_number', type=int, default=13, help='Data set index to visualize')
+    parser.add_argument('--test_split', type=float, default=0.2, help='Test split ratio')
 
     ############ Checkpoint directory ############
-    parser.add_argument('--checkpoint_dir', type=str, default=None, help='Directory to save/load checkpoints')
+    parser.add_argument('--checkpoint_dir', type=str, default="/home/s.bhat/Checkpoints/3D_Bbox/", help='Directory to save/load checkpoints')
 
     return parser.parse_args()
 
@@ -251,7 +256,9 @@ def main() -> None:
 
         # Create dataset and dataloaders
         print(f"Initializing the dataset and dataloaders")
-        train_dataset, test_dataset = dataset.get_datasets() # Need to add this function
+        train_dataset, test_dataset = dataset.get_datasets(
+            test_size=args.test_split
+        )
 
         train_loader = DataLoader(
             train_dataset,
@@ -271,40 +278,76 @@ def main() -> None:
         print(f"Setting up the optimizer")
         optimizer = build_optimizer(args, model)
 
+        # Create a learning rate scheduler
+        if args.lr_scheduler == "cosine":
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=args.max_epochs
+            )
+        elif args.lr_scheduler == "cosine_warmup":
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                optimizer, T_0=args.warm_lr_epochs, T_mult=2
+            )
+        else:
+            raise ValueError(f"Invalid learning rate scheduler: {args.lr_scheduler}")
+
+        # Initialize weights and biases logger
+        wandb.init(project="3D Bounding box prediction", config=args)
+        wandb.watch(model, log="all")
+
         # Resume from checkpoint if applicable.
         start_epoch = 0
-        if args.checkpoint_dir and os.path.exists(args.checkpoint_dir):
+        if args.checkpoint_dir and os.path.exists(args.checkpoint_dir + "checkpoint.pth"):
             print(f"Loading checkpoint from {args.checkpoint_dir}...")
+            # Need to also check if the model can be loaded with pre-trained weights
             checkpoint = torch.load(os.path.join(args.checkpoint_dir, "checkpoint.pth"))
-            model.load_state_dict(checkpoint["model_state_dict"])
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            start_epoch = checkpoint["epoch"] + 1
-            print(f"Resumed from epoch {start_epoch}.")
 
-        # Train or test the model.
-        if args.test_only:
-            print(f"Running in test-only mode")
-            train(
+            # Load the model with weights from checkpoint
+            model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+
+            # Load optimizer state if available
+            if "optimizer_state_dict" in checkpoint:
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+            # Resume from the last epoch
+            start_epoch = checkpoint.get("epoch", 0) + 1
+            print(f"Resumed from epoch {start_epoch}.")
+            wandb.config.update({"checkpoint_loaded": True, "pretrained_weights": False})
+        else:
+            print("No checkpoint directory with checkpoint path is provided.")
+            wandb.config.update({"checkpoint_loaded": False})
+        
+        # Check if there is a valid pre-trained weights path and if so, load the weights
+        if start_epoch == 0 and args.pretrained_weights_path and os.path.isfile(args.pretrained_weights_path):
+            print(f"Loaded pretrained weights from {args.pretrained_weights_path}")
+            model.load_state_dict(torch.load(args.pretrained_weights_path, map_location=DEVICE))
+            wandb.config.update({"pretrained_weights": True})
+            wandb.config.update({"pretrained_weights_path": args.pretrained_weights_path})
+        else:
+            if start_epoch == 0:
+                print("No pretrained weights provided. Training from scratch.")
+            wandb.config.update({"pretrained_weights": False})
+
+        # Train or test/validate the model.
+        if args.valid_only:
+            print(f"Validation only...")
+            validate(
                 model=model,
-                criterion=None,  # Loss is not required for testing.
-                optimizer=None,
-                train_loader=None,
-                test_loader=test_loader,
-                start_epoch=start_epoch,
-                num_epochs=0,  # No training epochs for testing.
-                checkpoint_dir=None,
+                data_loader=test_loader,
+                device=DEVICE,
+                criterion=criterion,
+                iou_evaluator=IoUEvaluator()
             )
         else:
             print(f"Starting training...")
             train(
+                args=args,
                 model=model,
                 criterion=criterion,
                 optimizer=optimizer,
-                train_loader=train_loader,
-                test_loader=test_loader,
-                start_epoch=start_epoch,
-                num_epochs=args.epochs,
-                checkpoint_dir=args.checkpoint_dir,
+                train_dataloader=train_loader,
+                validate_dataloader=test_loader,
+                scheduler=scheduler,
+                device=DEVICE
             )
 
     except (NotADirectoryError, FileNotFoundError, ValueError) as e:
