@@ -20,7 +20,7 @@ from losses.loss_3ddetr import build_loss_object
 from trainer.trainer import train, validate
 from utils.miscellaneous import worker_init_fn, collate_fn
 from utils.mean_iou_evaluation import IoUEvaluator
-
+from utils.low_precision_conversion import convert_model_to_low_precision
 
 
 def set_device():
@@ -355,6 +355,12 @@ def main(cfg: DictConfig) -> None:
                 scheduler=scheduler,
                 device=DEVICE
             )
+        
+        if cfg.export_model:
+            print("Start of conversion to low precision formats")
+            convert_model_to_low_precision(cfg, model, DEVICE)
+            print("Model conversion successul")
+            
 
     except (NotADirectoryError, FileNotFoundError, ValueError) as e:
         print(e, file=sys.stderr)
