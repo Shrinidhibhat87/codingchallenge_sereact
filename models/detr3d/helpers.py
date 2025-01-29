@@ -33,7 +33,7 @@ NORM_DICT = {
 
 # Dictionary for activation functions
 ACTIVATION_DICT = {
-    "relu": nn.ReLU,
+    "relu": partial(nn.ReLU, inplace=False),
     "gelu": nn.GELU,
     "leakyrelu": partial(nn.LeakyReLU, negative_slope=0.1),
 }

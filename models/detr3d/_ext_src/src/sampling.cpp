@@ -30,8 +30,8 @@ at::Tensor gather_points(at::Tensor points, at::Tensor idx) {
 
   if (points.is_cuda()) {
     gather_points_kernel_wrapper(points.size(0), points.size(1), points.size(2),
-                                 idx.size(1), points.data<float>(),
-                                 idx.data<int>(), output.data<float>());
+                                 idx.size(1), points.data_ptr<float>(),
+                                 idx.data_ptr<int>(), output.data_ptr<float>());
   } else {
     AT_ASSERT(false, "CPU not supported");
   }
@@ -56,8 +56,8 @@ at::Tensor gather_points_grad(at::Tensor grad_out, at::Tensor idx,
 
   if (grad_out.is_cuda()) {
     gather_points_grad_kernel_wrapper(grad_out.size(0), grad_out.size(1), n,
-                                      idx.size(1), grad_out.data<float>(),
-                                      idx.data<int>(), output.data<float>());
+                                      idx.size(1), grad_out.data_ptr<float>(),
+                                      idx.data_ptr<int>(), output.data_ptr<float>());
   } else {
     AT_ASSERT(false, "CPU not supported");
   }
@@ -78,8 +78,8 @@ at::Tensor furthest_point_sampling(at::Tensor points, const int nsamples) {
 
   if (points.is_cuda()) {
     furthest_point_sampling_kernel_wrapper(
-        points.size(0), points.size(1), nsamples, points.data<float>(),
-        tmp.data<float>(), output.data<int>());
+        points.size(0), points.size(1), nsamples, points.data_ptr<float>(),
+        tmp.data_ptr<float>(), output.data_ptr<int>());
   } else {
     AT_ASSERT(false, "CPU not supported");
   }

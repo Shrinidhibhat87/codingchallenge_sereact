@@ -1,0 +1,63 @@
+# Base training YAML file for training the model
+
+input_folder_path: "/home/s.bhat/Coding/codingchallenge_sereact/data"
+
+seed: 40
+start_epoch: 0
+max_epochs: 10
+batch_size: 2
+num_workers: 4
+valid_only: false
+
+model:
+  encoder:
+    dim: 256
+    nheads: 4
+    ffn_dim: 128
+    dropout: 0.1
+    activation: relu
+    num_layers: 3
+    type: vanilla
+    preencoder_npoints: 2048
+    use_color: false
+  decoder:
+    dim: 256
+    nhead: 4
+    ffn_dim: 256
+    dropout: 0.1
+    num_layers: 3
+  position_embedding: fourier
+  mlp_dropout: 0.3
+  num_queries: 256
+  num_angular_bins: 12
+  pretrained_weights_path: null
+
+optimizer:
+  base_lr: 0.0005
+  warm_lr: 1e-6
+  warm_lr_epochs: 9
+  final_lr: 1e-6
+  lr_scheduler: cosine
+  weight_decay: 0.1
+  filter_biases_wd: false
+  clip_gradient: 0.1
+
+loss:
+  matcher_costs:
+    giou: 2.0
+    cost_box_corners: 0.1
+  weights:
+    giou: 0.1
+    box_corners: 0.1
+    center: 5.0
+    angle_cls: 0.1
+    angle_reg: 0.5
+    size: 1.0
+    no_object: 0.2
+
+debug:
+  enable: false
+  ds_number: 13
+
+test_split: 0.2
+checkpoint_dir: "/home/s.bhat/Checkpoints/3D_Bbox/"

@@ -31,12 +31,18 @@ def shift_scale_points(pred_xyz, src_range, dst_range=None):
     Returns:
         Tensor: Transformed coordinates of shape (B, N, 3).
     """
+    # The source range is shaped (3,). So need to reshape this.
+    batch_size = pred_xyz.shape[0]
+    # Reshaped to (1, 3)
+    src_min = src_range[0].float().unsqueeze(0)
+    src_max = src_range[1].float().unsqueeze(0)
+    src_range = [src_min, src_max]
+
     if dst_range is None:
         # Default destination range is [0, 1] for each coordinate
-        dst_range = [
-            torch.zeros((src_range[0].shape[0], 3), device=src_range[0].device),
-            torch.ones((src_range[0].shape[0], 3), device=src_range[0].device),
-        ]
+        dst_min = torch.zeros((batch_size, 3), device=src_range[0].device, dtype=src_range[0].dtype)
+        dst_max = torch.ones((batch_size, 3), device=src_range[0].device, dtype=src_range[0].dtype)
+        dst_range = [dst_min, dst_max]
 
     if pred_xyz.ndim == 4:
         # Adjust ranges for batched input
@@ -65,18 +71,22 @@ def shift_scale_points(pred_xyz, src_range, dst_range=None):
 
 def scale_points(pred_xyz, mult_factor):
     """
-    Scales the given points by a multiplication factor.
+    Scales the given points by a multiplication factor using PyTorch operations.
 
     Parameters:
-    pred_xyz (numpy.ndarray): A numpy array of shape (..., 3) representing the points to be scaled.
-    mult_factor (numpy.ndarray): A numpy array of shape (...) representing the scaling factors.
+    pred_xyz (Tensor): A Tensor of shape (..., 3) representing the points to be scaled.
+    mult_factor (Tensor): A Tensor of shape (3,) representing the scaling factors.
 
     Returns:
-    numpy.ndarray: A numpy array of the same shape as pred_xyz with the points scaled by the multiplication factor.
+    Tensor: A Tensor of the same shape as pred_xyz with the points scaled by the multiplication factor.
     """
-    if pred_xyz.ndim == 4:
-        mult_factor = mult_factor[:, None]
-    scaled_xyz = pred_xyz * mult_factor[:, None, :]
+    # Get the number of dimensions in pred_xyz
+    num_dims = pred_xyz.dim()
+    # Reshape mult_factor to have the same number of dimensions as pred_xyz, with the last dimension being 3
+    for _ in range(num_dims - 1):
+        mult_factor = mult_factor.unsqueeze(0)
+    # Multiply pred_xyz by mult_factor
+    scaled_xyz = pred_xyz * mult_factor
     return scaled_xyz
 
 
@@ -106,3 +116,47 @@ def farthest_point_sample(xyz, npoint):
         farthest = torch.max(distance, -1)[1]  # Select the next farthest point
 
     return centroids
+
+
+def collate_fn(batch):
+    """
+    Collate function to be used with DataLoader to stack the data in the batch.
+
+    Args:
+        batch (list): A list of tuples containing the data and label.
+
+    Returns:
+        tuple: A tuple containing the stacked data and label.
+    """
+    # Load PCD tensors
+    pcd_tensors = [item['pcd_tensor'] for item in batch]
+    # Load Bbox tensors
+    bbox_tensors = [item['bbox3d_tensor'] for item in batch]
+    # Point cloud min and max dimensions
+    pcd_min = [torch.from_numpy(item['point_cloud_dims_min']) for item in batch]
+    pcd_max = [torch.from_numpy(item['point_cloud_dims_max']) for item in batch]
+
+    return {
+        'pcd_tensor': pcd_tensors, # Cant stack here because of different number of points
+        'bbox3d_tensor': bbox_tensors,
+        'point_cloud_dims_min': pcd_min,
+        'point_cloud_dims_max': pcd_max
+    }
+
+def move_to_device(data, device):
+    """
+    Move the data to the specified device.
+
+    Args:
+        data (dict/torch.Tensor): A dictionary containing the data to be moved to the device.
+        device (torch.device): The device to move the data to.
+
+    Returns:
+        dict: A dictionary containing the data moved to the device.
+    """
+    if isinstance(data, dict):
+        return {key: value.to(device) if isinstance(value, torch.Tensor) else value for key, value in data.items()}
+    elif isinstance(data, torch.Tensor):
+        return data.to(device)
+    else:
+        return data
