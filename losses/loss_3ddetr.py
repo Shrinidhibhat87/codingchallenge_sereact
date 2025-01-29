@@ -59,14 +59,12 @@ def all_reduce_average(tensor):
 class Matcher_loss(nn.Module):
     def __init__(
         self,
-        cost_objectness,
         cost_giou,
-        cost_center
+        cost_box_corners
     ):
         super().__init__()
-        self.cost_objectness = cost_objectness
         self.cost_giou = cost_giou
-        self.cost_center = cost_center
+        self.cost_box_corners = cost_box_corners
     
     @torch.no_grad()
     def forward(
@@ -75,26 +73,32 @@ class Matcher_loss(nn.Module):
         targets
     ):
         # Get the batch size
-        batch_size = outputs["objectness_prob"].shape[0]
+        batch_size = outputs["box_corners"].shape[0]
         # Get the number of queries
-        num_queries = outputs["objectness_prob"].shape[1]
+        num_queries = outputs["box_corners"].shape[1]
         
         # Objectness cost (batch, num_queries, 1). Negative log prob of objectness
-        objectness_matching = -outputs["objectness_prob"].unsqueeze(-1)
+        # objectness_matching = -outputs["objectness_prob"].unsqueeze(-1)
         
         # Center cost (batch, num_queries, ngt). Distance b/w predicted and ground truth
-        center_matching = outputs['center_dist'].detach()
-        
+        # center_matching = outputs['center_dist'].detach()
+
+        # Compute the L1 distance between predicted and ground truth box corners
+        box_corners_dist = torch.cdist(
+            outputs["box_corners"].view(batch_size, num_queries, -1),
+            targets.view(batch_size, -1, 24),
+            p=1
+        )
+
         # GIoU cost (batch, num_queries, ngt). Negative GIoU score.
         giou_matching = -outputs["gious"].detach()
         
         # Calculate the final cost
         final_cost = (
-            self.cost_objectness * objectness_matching +
-            self.cost_center * center_matching +
+            self.cost_box_corners * box_corners_dist +
             self.cost_giou * giou_matching
         )
-        
+
         # Detach from GPU to CPU
         final_cost = final_cost.detach().cpu().numpy()
         
@@ -105,25 +109,25 @@ class Matcher_loss(nn.Module):
         # If batch_size == batchsize and nprop == num_queries, remove the lines below.
         batchsize, nprop = final_cost.shape[0], final_cost.shape[1]
         per_prop_gt_inds = torch.zeros(
-            [batchsize, nprop], dtype=torch.int64, device=outputs["semantic_class_prob"].device
+            [batchsize, nprop], dtype=torch.int64, device=outputs["box_corners"].device
         )
         proposal_matched_mask = torch.zeros(
-            [batchsize, nprop], dtype=torch.float32, device=outputs["semantic_class_prob"].device
+            [batchsize, nprop], dtype=torch.float32, device=outputs["box_corners"].device
         )
         
         # Here, we perform the Hungarian matching
         for b in range(batch_size):
-            assign = []
-            if "nactual_gt" in targets and targets["nactual_gt"][b] > 0:
-                nactual_gt = targets["nactual_gt"][b]
-                assign = linear_sum_assignment(final_cost[b, :, : nactual_gt[b]])
+            if targets.shape[1] > 0:
+                assign = linear_sum_assignment(final_cost[b, :, : targets.shape[1]])
                 assign = [
-                    torch.from_numpy(x).long().to(device=outputs["semantic_class_prob"].device)
+                    torch.from_numpy(x).long().to(device=outputs["box_corners"].device)
                     for x in assign
                 ]
                 per_prop_gt_inds[b, assign[0]] = assign[1]
                 proposal_matched_mask[b, assign[0]] = 1
-            assignments.append(assign)
+                assignments.append(assign)
+            else:
+                assignments.append([])
 
         return {
             "assignments": assignments,
@@ -144,12 +148,11 @@ class SetCriterion(nn.Module):
 
         # Losses
         self.loss_functions = {
-            "loss_angle": self.loss_angle,
-            "loss_center": self.loss_center,
-            "loss_size": self.loss_size,
+            "loss_box_corners" : self.loss_box_corners,
             "loss_giou": self.loss_giou,
         }
-
+    """
+    
     def loss_angle(
         self,
         outputs,
@@ -243,31 +246,7 @@ class SetCriterion(nn.Module):
 
         # Return the center loss
         return {"loss_center": center_loss}
-    
-    def loss_giou(
-        self,
-        outputs,
-        targets,
-        assignments
-    ):
-        # Get the GIoU distances
-        gious_dist = 1 - outputs["gious"]
-        
-        # Select appropriate GIoUs by using proposal to ground truth matching
-        giou_loss = torch.gather(
-            gious_dist, 2, assignments["per_prop_gt_inds"].unsqueeze(-1)
-        ).squeeze(-1)
-        # Zero-out non-matched proposals
-        giou_loss = giou_loss * assignments["proposal_matched_mask"]
-        giou_loss = giou_loss.sum()
 
-        # Normalize the GIoU loss by the number of boxes
-        if targets["num_boxes"] > 0:
-            giou_loss /= targets["num_boxes"]
-
-        # Return the GIoU loss
-        return {"loss_giou": giou_loss}
-    
     def loss_size(
         self,
         outputs,
@@ -307,32 +286,97 @@ class SetCriterion(nn.Module):
         
         # Return the Size loss
         return {"loss_size": size_loss}
+    """
+
+    def loss_giou(
+        self,
+        outputs,
+        targets,
+        assignments
+    ):
+        # Get the GIoU distances
+        gious_dist = 1 - outputs["gious"]
+        
+        # Select appropriate GIoUs by using proposal to ground truth matching
+        giou_loss = torch.gather(
+            gious_dist, 2, assignments["per_prop_gt_inds"].unsqueeze(-1)
+        ).squeeze(-1)
+        # Zero-out non-matched proposals
+        giou_loss = giou_loss * assignments["proposal_matched_mask"]
+        giou_loss = giou_loss.sum()
+
+        # Normalize the GIoU loss by the number of boxes
+        if targets.shape[1] > 0:
+            giou_loss /= targets.shape[1]
+
+        # Return the GIoU loss
+        return {"loss_giou": giou_loss}
+
     
+    def loss_box_corners(
+        self,
+        outputs,
+        gt_bbox_corners,
+        assignments
+    ):
+        # Get the predicted box corners (B, N_q, 8, 3)
+        predicted_box_corners = outputs["box_corners"]
+        
+        # Check if there are any ground truth boxes
+        if gt_bbox_corners.shape[1] > 0:
+            # Gather the matched ground truth box corners based on assignments
+            matched_gt_box_corners = torch.gather(
+                gt_bbox_corners, 1, assignments["per_prop_gt_inds"].unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 8, 3)
+            )
+            
+            # Computer L1 loss between predicted and ground truth box corners
+            # Also sum over the 8 corners and 3 coordinates
+            box_corners_loss = F.l1_loss(
+                predicted_box_corners, matched_gt_box_corners, reduction="none"
+            ).sum(dim=(-1, -2))
+            
+            # Zero-out non-matched proposals
+            box_corners_loss = box_corners_loss * assignments["proposal_matched_mask"]
+            box_corners_loss = box_corners_loss.sum()
+            
+            # Normalize the loss by the number of boxes
+            box_corners_loss /= gt_bbox_corners.shape[1]
+        else:
+            # Because there are no ground truth boxes, set the loss to zero
+            box_corners_loss = torch.zeros(1, device=predicted_box_corners.device).squeeze()
+        
+        return {"loss_box_corners": box_corners_loss}
+
     def single_output_forward(
         self,
         outputs,
-        targets  
+        targets
     ):
         # Compute the Generalized Intersection over Union (GIoU) between predicted and ground truth boxes
+        # NOTE: Here we have assumed that the boxes are not rotated.
+        #       We also set needs_grad to False.
         gious = generalized_box3d_iou(
-            outputs["box_corners"],
-            targets["gt_box_corners"],
-            targets["nactual_gt"],
-            rotated_boxes=torch.any(targets["gt_box_angles"] > 0).item(),
-            needs_grad=(self.loss_weight_dict["loss_giou_weight"] > 0), # Check if we really need this parameter.
+            outputs['box_corners'],
+            targets,
+            nums_k2=torch.tensor([targets.shape[1]], device=outputs['box_corners'].device),
+            rotated_boxes=False,
+            needs_grad=False # (self.loss_weight_dict["loss_giou_weight"] > 0)
         )
 
         # Store the GIoU in the outputs dictionary
         outputs["gious"] = gious
-
+        
+        """
         # Compute the L1 distance between predicted and ground truth box centers
         center_dist = torch.cdist(
             outputs["center_normalized"], targets["gt_box_centers_normalized"], p=1
         )
         # Store the center distances in the outputs dictionary
-        outputs["center_dist"] = center_dist
+        outputs["center_dist"] = center_dist        
+        """
 
         # Perform the matching between predictions and ground truth boxes
+        # targets is already a tensor
         assignments = self.matcher_loss(outputs, targets)
         
         # Initialize a dictionary to store the losses
@@ -362,26 +406,34 @@ class SetCriterion(nn.Module):
                 final_loss += losses[k.replace("_weight", "")]
         
         # Return the final loss and the individual losses
-        return final_loss, losses
+        return final_loss, losses, assignments
     
     def forward(self, outputs, targets):
-        # Calculate the number of ground truth boxes present in each batch
-        nactual_gt = targets["gt_box_present"].sum(axis=1).long()
-        
+        # Because the outputs has the batch dimension, add that in targets
+        if targets.dim() == 3:
+            targets = targets.unsqueeze(0)
+
+        # Calculate the number of ground truth boxes present in the batch
+        # nactual_gt = targets.shape[1]
+
         # Calculate the total number of boxes across all replicas and clamp it to a minimum of 1
-        num_boxes = torch.clamp(all_reduce_average(nactual_gt.sum()), min=1).item()
+        # num_boxes = torch.clamp(all_reduce_average(nactual_gt.sum()), min=1).item()
         
         # Update the targets dictionary with the number of actual ground truth boxes
-        targets["nactual_gt"] = nactual_gt
-        targets["num_boxes"] = num_boxes
+        # targets["nactual_gt"] = nactual_gt
+        # targets["num_boxes"] = num_boxes
         
         # Update the targets dictionary with the number of boxes on this worker for distributed training
-        targets["num_boxes_replica"] = nactual_gt.sum().item()
+        # targets["num_boxes_replica"] = nactual_gt.sum().item()
 
         # Compute the loss and loss dictionary for the main outputs
-        loss, loss_dict = self.single_output_forward(outputs["outputs"], targets)
+        loss, loss_dict, assingments = self.single_output_forward(
+            outputs,
+            targets
+        )
 
         # If there are auxiliary outputs, compute the loss for each of them
+        """
         if "aux_outputs" in outputs:
             for k in range(len(outputs["aux_outputs"])):
                 # Compute the intermediate loss and loss dictionary for the auxiliary outputs
@@ -394,41 +446,36 @@ class SetCriterion(nn.Module):
                 
                 # Update the loss dictionary with the intermediate losses
                 for interm_key in interm_loss_dict:
-                    loss_dict[f"{interm_key}_{k}"] = interm_loss_dict[interm_key]
-        
+                    loss_dict[f"{interm_key}_{k}"] = interm_loss_dict[interm_key]        
+        """
         # Return the total loss and the loss dictionary
-        return loss, loss_dict
+        return loss, loss_dict, assingments
         
 
-def build_loss_object(args):
+def build_loss_object(cfg_loss):
     """
     Build the loss object based on the arguments.
 
     Args:
-        args (argparse.Namespace): The parsed arguments.
+        cfg_loss (Dictionary): The parsed arguments.
 
     Returns:
         nn.Module: The loss object.
     """
     # There are 4 mjaor components of the matching loss
     matcher_loss = Matcher_loss(
-        cost_giou=args.matcher_cost_giou,
-        cost_center=args.matcher_cost_center,
-        cost_objectness=args.matcher_cost_objectness
+        cost_giou=cfg_loss.matcher_costs.giou,
+        cost_box_corners=cfg_loss.matcher_costs.cost_box_corners
     )
     
     loss_weight_dict = {
-        "loss_giou_weight": args.loss_giou_weight,
-        "loss_center_weight": args.loss_center_weight,
-        "loss_angle_cls_weight": args.loss_angle_cls_weight,
-        "loss_angle_reg_weight": args.loss_angle_reg_weight,
-        "loss_size_weight": args.loss_size_weight,
-        "loss_no_object_weight": args.loss_no_object_weight
+        "loss_giou_weight": cfg_loss.weights.giou,
+        "loss_box_corners_weight": cfg_loss.weights.box_corners
     }
     
     criterion = SetCriterion(
         matcher_loss=matcher_loss,
         loss_weight_dict=loss_weight_dict
     )
-    
+
     return criterion
