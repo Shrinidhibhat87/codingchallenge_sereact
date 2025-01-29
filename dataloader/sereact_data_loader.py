@@ -222,8 +222,8 @@ class SereactDataloader(Dataset):
         # 4) Point cloud
         pcd = np.load(os.path.join(subfolder_path, 'pc.npy'))
         # Have a tensor form of the point cloud
-        pcd_tensor = torch.tensor(pcd, dtype=torch.float32).view(3, -1)
-        
+        pcd_tensor = torch.tensor(pcd, dtype=torch.float32).view(-1, 3)
+
         # Check if asked to apply augmentation.
         if self.augment:
             pcd, bbox_3d = self.apply_augmentation(pcd, bbox_3d)
@@ -241,7 +241,9 @@ class SereactDataloader(Dataset):
         else:
             data_dict = {
                 'pcd_tensor': pcd_tensor,
-                'bbox3d_tensor': bbox_3d_tensor
+                'bbox3d_tensor': bbox_3d_tensor,
+                'point_cloud_dims_min': pcd.reshape(-1, 3).min(axis=0)[:3],
+                'point_cloud_dims_max': pcd.reshape(-1, 3).max(axis=0)[:3]
             }
 
         return data_dict
