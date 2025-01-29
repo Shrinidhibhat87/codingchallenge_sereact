@@ -1,4 +1,8 @@
 data/*
 .vscode/*
-wandb/*
 **/__pycache__
+models/detr3d/build*
+models/detr3d/sys
+outputs/*
+*_ext_src.cpython-312-x86_64-linux-gnu.so
+wandb/*
