@@ -9,6 +9,7 @@ import datetime
 import wandb
 
 from utils.mean_iou_evaluation import IoUEvaluator
+from utils.miscellaneous import move_to_device
 
 
 def save_checkpoint(
@@ -78,59 +79,86 @@ def train_one_epoch(
         # Move input data to the specified device
         inputs = [obj.to(device) for obj in batch["pcd_tensor"]]
         gt_bboxes = [obj.to(device) for obj in batch["bbox3d_tensor"]]
-
-
+        pcd_dims_min = [obj.to(device) for obj in batch["point_cloud_dims_min"]]
+        pcd_dims_max = [obj.to(device) for obj in batch["point_cloud_dims_max"]]
+        # Maybe use the move_to_device function here
+        # move_to_device(batch, device)
+        torch.autograd.set_detect_anomaly(True)
         # Forward pass
         optimizer.zero_grad()
         # Possibly would have to add the input as a form of dictionary
-        outputs = model(inputs)
-        pred_boxes = outputs["box_corners"]
+        outputs = model(
+            inputs,
+            point_cloud_dims_min=pcd_dims_min,
+            point_cloud_dims_max=pcd_dims_max,
+        )
+        # The output here is also a list, so we need to handle this accordingly
+        for output, gt_bbox in zip(outputs, gt_bboxes):
+            # Each output has two keys which internally is of type Dict
+            pred_boxes = output['outputs']
 
-        # Compute loss
-        loss = metric(pred_boxes, gt_bboxes)
-        # Get total loss to back propagate
-        loss.backward()
+            # Compute loss
+            loss, loss_dict, assignments = metric(pred_boxes, gt_bbox)
+            # Get total loss to back propagate
+            loss.backward()
 
-        # Since norm clipping is necessary, incorporate that
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1, norm_type=2.0)
+            # Since norm clipping is necessary, incorporate that
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1, norm_type=2.0)
 
-        # Parameter update based on the gradients
-        optimizer.step()
+            # Parameter update based on the gradients
+            optimizer.step()
 
-        # learning rate scheduler
-        scheduler.step()
+            # learning rate scheduler
+            scheduler.step()
 
-        # Update epoch loss
-        epoch_loss += loss.item()
+            # Update epoch loss
+            epoch_loss += loss.item()
 
-        # Update IoU evaluator
-        iou_evaluator.update(pred_boxes.cpu().detach().numpy(), gt_bboxes.cpu().detach().numpy())
+            # Update IoU evaluator
+            # Before evaluation, there needs to be changes made to the predictions
+            # Use of assignments here to evaluate after the Hungarian matching algorithm
+            matched_predicted_indices = assignments['assignments'][0][0]
+            matched_gt_indices = assignments['assignments'][0][1]
+            
+            # Ensure these are moved to CPU for evaluation
+            matched_predicted_indices = matched_predicted_indices.cpu().detach().numpy()
+            matched_gt_indices = matched_gt_indices.cpu().detach().numpy()
+            
+            # Extract only the matched predicted boxes from the full set (1, 256, 8, 3)
+            predicted_bboxes_matched = pred_boxes['box_corners'][0, matched_predicted_indices]
+            gt_bboxes_matched = gt_bbox[0, matched_gt_indices]
 
-        # End timer and accumulate batch time
-        batch_time_accum += time.time() - batch_start_time
+            # Ensure these are also moved to CPU
+            predicted_bboxes_matched = predicted_bboxes_matched.cpu().detach().numpy()
+            gt_bboxes_matched = gt_bboxes_matched.cpu().detach().numpy()
 
-        # Logging at intervals
-        if batch_idx % log_interval == 0 or batch_idx == total_batches:
-            mean_loss = epoch_loss / batch_idx
-            avg_batch_time = batch_time_accum / log_interval
-            eta = avg_batch_time * (total_batches - batch_idx)
-            eta_str = str(datetime.timedelta(seconds=int(eta)))
+            iou_evaluator.update(predicted_bboxes_matched, gt_bboxes_matched)
 
-            print(
-                f"Epoch [{epoch}]: Batch [{batch_idx}/{total_batches}], "
-                f"Loss: {mean_loss:.4f}, ETA: {eta_str}"
-            )
+            # End timer and accumulate batch time
+            batch_time_accum += time.time() - batch_start_time
 
-            # Log to Weights and Biases
-            wandb.log({
-                "epoch": epoch,
-                "batch": batch_idx,
-                "loss": mean_loss,
-                "batch_time": avg_batch_time,
-            })
+            # Logging at intervals
+            if batch_idx % log_interval == 0 or batch_idx == total_batches:
+                mean_loss = epoch_loss / batch_idx
+                avg_batch_time = batch_time_accum / log_interval
+                eta = avg_batch_time * (total_batches - batch_idx)
+                eta_str = str(datetime.timedelta(seconds=int(eta)))
 
-            # Reset batch time accumulator
-            batch_time_accum = 0.0
+                print(
+                    f"Epoch [{epoch}]: Batch [{batch_idx}/{total_batches}], "
+                    f"Loss: {mean_loss:.4f}, ETA: {eta_str}"
+                )
+
+                # Log to Weights and Biases
+                wandb.log({
+                    "epoch": epoch,
+                    "batch": batch_idx,
+                    "loss": mean_loss,
+                    "batch_time": avg_batch_time,
+                })
+
+                # Reset batch time accumulator
+                batch_time_accum = 0.0
 
     # Compute IoU metrics for the epoch
     metrics = iou_evaluator.compute_metrics()
