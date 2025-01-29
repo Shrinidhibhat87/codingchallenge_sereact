@@ -126,7 +126,7 @@ def train_one_epoch(
             
             # Extract only the matched predicted boxes from the full set (1, 256, 8, 3)
             predicted_bboxes_matched = pred_boxes['box_corners'][0, matched_predicted_indices]
-            gt_bboxes_matched = gt_bbox[0, matched_gt_indices]
+            gt_bboxes_matched = gt_bbox[matched_gt_indices]
 
             # Ensure these are also moved to CPU
             predicted_bboxes_matched = predicted_bboxes_matched.cpu().detach().numpy()
