@@ -17,54 +17,87 @@ def to_list_3d(arr) -> List[List[List[float]]]:
     arr = arr.detach().cpu().numpy().tolist()
     return arr
 
-def computeIntersection(cp1, cp2, s, e):
-    dc = [cp1[0] - cp2[0], cp1[1] - cp2[1]]
-    dp = [s[0] - e[0], s[1] - e[1]]
-    n1 = cp1[0] * cp2[1] - cp1[1] * cp2[0]
-    n2 = s[0] * e[1] - s[1] * e[0]
-    n3 = 1.0 / (dc[0] * dp[1] - dc[1] * dp[0])
-    
-    return [(n1 * dp[0] - n2 * dc[0]) * n3, (n1 * dp[1] - n2 * dc[1]) * n3]
-
-def inside(cp1, cp2, p):
-    return (cp2[0] - cp1[0]) * (p[1] - cp1[1]) > (cp2[1] - cp1[1]) * (p[0] - cp1[0])
-
-
-def polygon_clip_unnest(subjectPolygon, clipPolygon):
-    """ Clip a polygon with another polygon.
-
-    Ref: https://rosettacode.org/wiki/Sutherland-Hodgman_polygon_clipping#Python
+def computeIntersection(cp1: torch.Tensor, cp2: torch.Tensor, s: torch.Tensor, e: torch.Tensor) -> torch.Tensor:
+    """ Compute the intersection of two line segments.
 
     Args:
-        subjectPolygon: a list of (x,y) 2d points, any polygon.
-        clipPolygon: a list of (x,y) 2d points, has to be *convex*
-    Note:
-        **points have to be counter-clockwise ordered**
-
-    Return:
-        a list of (x,y) vertex point for the intersection polygon.
+        cp1, cp2: Vertices of the clip polygon edge.
+        s, e: Vertices of the subject polygon edge.
+    Returns:
+        A tensor of shape (2,) representing the intersection point.
     """
-    outputList = [subjectPolygon[x] for x in range(subjectPolygon.shape[0])]
+    # Line segment intersection logic
+    A = cp2 - cp1
+    B = e - s
+    C = s - cp1
+
+    cross = A[0] * B[1] - A[1] * B[0]
+    if abs(cross) < 1e-8:
+        return torch.tensor([float('inf'), float('inf')], device=cp1.device)
+
+    t = (C[0] * B[1] - C[1] * B[0]) / cross
+    u = (C[0] * A[1] - C[1] * A[0]) / cross
+
+    if 0 <= t <= 1 and 0 <= u <= 1:
+        intersection = cp1 + t * A
+        return intersection
+    else:
+        return torch.tensor([float('inf'), float('inf')], device=cp1.device)
+
+
+def inside(cp1: torch.Tensor, cp2: torch.Tensor, p: torch.Tensor) -> bool:
+    """ Check if a point is inside the clip edge.
+
+    Args:
+        cp1, cp2: Vertices of the clip polygon edge.
+        p: The point to check.
+    Returns:
+        True if the point is inside the clip edge, False otherwise.
+    """
+    return ((cp2[0] - cp1[0]) * (p[1] - cp1[1]) > (cp2[1] - cp1[1]) * (p[0] - cp1[0]) != 0)
+
+
+def polygon_clip_unnest(subjectPolygon, clipPolygon) -> torch.Tensor:
+    """ Clip a polygon with another polygon.
+    
+    Ref: https://rosettacode.org/wiki/Sutherland-Hodgman_polygon_clipping#Python (Modified)
+    
+    Args:
+        subjectPolygon: A tensor of shape (N, 2) representing the subject polygon vertices.
+        clipPolygon: A tensor of shape (M, 2) representing the convex clip polygon vertices.
+
+    Returns:
+        A tensor of shape (K, 2) representing the vertices of the clipped polygon.
+
+    """
+    # Start with the subject polygon
+    outputList = subjectPolygon.clone()
+    # Start with the last vertex of the clip polygon
     cp1 = clipPolygon[-1]
 
     for clipVertex in clipPolygon:
         cp2 = clipVertex
-        inputList = outputList.copy()
-        outputList.clear()
+        inputList = outputList.clone()
+        # Reset outputList
+        outputList = torch.empty((0, 2), dtype=subjectPolygon.dtype, device=subjectPolygon.device)
+        # Start with the last vertex of the input list
         s = inputList[-1]
 
         for subjectVertex in inputList:
             e = subjectVertex
             if inside(cp1, cp2, e):
                 if not inside(cp1, cp2, s):
-                    outputList.append(computeIntersection(cp1, cp2, s, e))
-                outputList.append(e)
+                    intersection = computeIntersection(cp1, cp2, s, e)
+                    outputList = torch.cat((outputList, intersection.unsqueeze(0)), dim=0)
+                outputList = torch.cat((outputList, e.unsqueeze(0)), dim=0)
             elif inside(cp1, cp2, s):
-                outputList.append(computeIntersection(cp1, cp2, s, e))
+                intersection = computeIntersection(cp1, cp2, s, e)
+                outputList = torch.cat((outputList, intersection.unsqueeze(0)), dim=0)
             s = e
         cp1 = cp2
-        if len(outputList) == 0:
+        if outputList.shape[0] == 0:
             break
+
     return outputList
 
 def box_intersection(rect1, rect2, non_rot_inter_areas, nums_k2, inter_areas, approximate):
@@ -261,7 +294,7 @@ def generalized_box3d_iou_cython(
         gious *= mask
     return gious
 
-"""
+
 # Results in a runtime error, which is why commenting this code out for now.
 def generalized_box3d_iou_tensor(
     corners1: torch.Tensor,
@@ -271,12 +304,14 @@ def generalized_box3d_iou_tensor(
     return_inter_vols_only: bool = False,
 ):
     # Need comment lines here
+    """
     Input:
         corners1: torch Tensor (B, K1, 8, 3), assume up direction is negative Y
         corners2: torch Tensor (B, K2, 8, 3), assume up direction is negative Y
         Assumes that the box is only rotated along Z direction
     Returns:
-        B x K1 x K2 matrix of generalized IOU by approximating the boxes to be axis aligned
+        B x K1 x K2 matrix of generalized IOU by approximating the boxes to be axis aligned    
+    """
     # Need comment lines here
     assert len(corners1.shape) == 4
     assert len(corners2.shape) == 4
@@ -368,7 +403,7 @@ def generalized_box3d_iou_tensor(
 
 generalized_box3d_iou_tensor_jit = torch.jit.script(generalized_box3d_iou_tensor)
 
-"""
+
 
 def generalized_box3d_iou(
     corners1: torch.Tensor,
@@ -382,10 +417,9 @@ def generalized_box3d_iou(
     if needs_grad is True or box_intersection is None:
         context = torch.enable_grad if needs_grad else torch.no_grad
         with context():
-            return None
-            #return generalized_box3d_iou_tensor_jit(
-                #corners1, corners2, nums_k2, rotated_boxes, return_inter_vols_only
-            #)
+            return generalized_box3d_iou_tensor_jit(
+                corners1, corners2, nums_k2, rotated_boxes, return_inter_vols_only
+            )
 
     else:
         # Cythonized implementation of GIoU
@@ -405,57 +439,65 @@ def flip_axis_to_camera_tensor(pc):
 
 def roty_batch_tensor(angle):
     """
-    Compute rotation matrices around the Y-axis (yaw).
-    
+    Compute rotation matrices around the Y-axis (yaw) for a batch of angles.
+
     Args:
-        angle (Tensor): Yaw angles in radians (N,).
-    
+        angle (Tensor): Yaw angles in radians (batch_size, num_queries).
+
     Returns:
-        Tensor: Rotation matrices (N, 3, 3).
+        Tensor: Rotation matrices (batch_size, num_queries, 3, 3).
     """
     cos_theta = torch.cos(angle)
     sin_theta = torch.sin(angle)
     
     # Create the rotation matrix
-    R = torch.zeros((angle.shape[0], 3, 3), device=angle.device)
-    R[:, 0, 0] = cos_theta
-    R[:, 0, 2] = sin_theta
-    R[:, 1, 1] = 1.0
-    R[:, 2, 0] = -sin_theta
-    R[:, 2, 2] = cos_theta
+    R = torch.zeros((angle.shape[0], angle.shape[1], 3, 3), device=angle.device)
+    R[:, :, 0, 0] = cos_theta
+    R[:, :, 0, 2] = sin_theta
+    R[:, :, 1, 1] = 1.0
+    R[:, :, 2, 0] = -sin_theta
+    R[:, :, 2, 2] = cos_theta
     
     return R
+
 
 def get_3d_box_batch_tensor(box_size, angle, center):
     """
     Generate 3D bounding box corners based on size, rotation, and center.
     
     Args:
-        box_size (Tensor): Size of the bounding box (N, 3) [length, height, width].
-        angle (Tensor): Rotation angle in radians (N,).
-        center (Tensor): Center coordinates of the bounding box (N, 3).
+        box_size (Tensor): Size of the bounding box (batch_size, num_queries, 3).
+        angle (Tensor): Rotation angle in radians (batch_size, num_queries).
+        center (Tensor): Center coordinates of the bounding box (batch_size, num_queries, 3).
     
     Returns:
         Tensor: 3D corner coordinates (N, 8, 3).
     """
-    assert box_size.ndim == 2 and angle.ndim == 1 and center.ndim == 2
-
     # Compute rotation matrices for the angles
     R = roty_batch_tensor(angle)
 
     # Bounding box dimensions
-    l = torch.unsqueeze(box_size[..., 0], -1)
-    w = torch.unsqueeze(box_size[..., 1], -1)
-    h = torch.unsqueeze(box_size[..., 2], -1)
+    l = box_size[..., 0].unsqueeze(-1)
+    w = box_size[..., 1].unsqueeze(-1)
+    h = box_size[..., 2].unsqueeze(-1)
 
     # Predefine 8 corners in the local coordinate system
-    corners_3d = torch.zeros((box_size.shape[0], 8, 3), device=box_size.device)
-    corners_3d[:, :, 0] = torch.cat([l / 2, l / 2, -l / 2, -l / 2, l / 2, l / 2, -l / 2, -l / 2], dim=-1)
-    corners_3d[:, :, 1] = torch.cat([h / 2, h / 2, h / 2, h / 2, -h / 2, -h / 2, -h / 2, -h / 2], dim=-1)
-    corners_3d[:, :, 2] = torch.cat([w / 2, -w / 2, -w / 2, w / 2, w / 2, -w / 2, -w / 2, w / 2], dim=-1)
+    corners_3d = torch.zeros((box_size.shape[0], box_size.shape[1], 8, 3), device=box_size.device)
+    corners_3d[..., :, 0] = torch.cat(
+        [l / 2, l / 2, -l / 2, -l / 2,
+        l / 2, l / 2, -l / 2, -l / 2], dim=-1
+    )
+    corners_3d[..., :, 1] = torch.cat(
+        [h / 2, h / 2, h / 2, h / 2,
+         -h / 2, -h / 2, -h / 2, -h / 2], dim=-1
+    )
+    corners_3d[..., :, 2] = torch.cat(
+        [w / 2, -w / 2, -w / 2, w / 2,
+         w / 2, -w / 2, -w / 2, w / 2], dim=-1
+    )
 
     # Apply rotation and translation to the corners
-    corners_3d = torch.einsum("bij,bkj->bki", R, corners_3d) 
-    corners_3d += center.unsqueeze(1)
+    corners_3d = torch.einsum('bqij,bqli->bqli', R, corners_3d) 
+    corners_3d += center.unsqueeze(2)
 
     return corners_3d
