@@ -3,7 +3,7 @@ Utility file that contains the IoU evaluator class.
 """
 
 import numpy as np
-from shapely.geometry import Polygon
+from shapely.geometry import MultiPoint, Polygon
 from shapely.affinity import scale
 
 
@@ -57,12 +57,24 @@ class IoUEvaluator:
         # Using shapely, we are converting 3D bounding boxes to 2D polygons after projections.
         # Therefore we assume here that assumes z-plane is dominant
         # projecting the predicted bounding box onto the x-y plane
-        predicted_polygon = Polygon(box_a[:, :2])
-        ground_truth_polygon = Polygon(box_b[:, :2])
+        # predicted_polygon = Polygon(box_a[:, :2])
+        # ground_truth_polygon = Polygon(box_b[:, :2])
+        
+        # Project to 2D and compute convex hull for each box
+        def get_convex_hull(box):
+            points = box[:, :2]
+            multipoint = MultiPoint(points)
+            hull = multipoint.convex_hull
+            
+            return hull
+        
+        # Get the convex hull for each box
+        hull_a = get_convex_hull(box_a)
+        hull_b = get_convex_hull(box_b)
 
         # Calculate the IoU
-        intersection = predicted_polygon.intersection(ground_truth_polygon).area
-        union = predicted_polygon.union(ground_truth_polygon).area
+        intersection = hull_a.intersection(hull_b).area
+        union = hull_a.union(hull_b).area
 
         # Edge case if there is no union
         if union == 0:
