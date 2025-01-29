@@ -70,7 +70,8 @@ class GenericMLP(nn.Module):
             norm = NORM_DICT[norm_fn_name]
         if norm_fn_name == "ln" and use_conv:
             # Use GroupNorm as a substitute for LayerNorm in Conv1d
-            norm = lambda x: nn.GroupNorm(1, x) # NEED TO READ MORE ABOUT THIS
+            # NEED TO READ MORE ABOUT THIS
+            norm = lambda x: nn.GroupNorm(1, x)
 
         # Ensure dropout is a list if specified
         if dropout is not None:
@@ -96,7 +97,7 @@ class GenericMLP(nn.Module):
             
             # Add dropout if specified
             if dropout is not None:
-                layers.append(nn.Dropout(p=dropout[idx]))
+                layers.append(nn.Dropout(p=dropout[idx], inplace=False))
             prev_dim = x
 
         # Add final layer
@@ -425,7 +426,7 @@ class Model3DDETR(nn.Module):
             input_dim=encoder_dim,
             hidden_dims=[encoder_dim], # if inductive bias is needed, we need to add a hidden layer
             output_dim=decoder_dim,
-            norm_fn_name='bn1d',
+            norm_fn_name='bn1d', # Was 'bn1d'
             activation='relu',
             use_conv=True,
             output_use_activation=True,
@@ -496,7 +497,7 @@ class Model3DDETR(nn.Module):
         # MLP head for the various 3D bounding box parameters
         center_head = mlp_func(output_dim=3)
         size_head = mlp_func(output_dim=3)
-        
+
         # The paper mentions quantizing the angles into 12 bins
         # Angle classification head: Which bin does the angle belong to
         angle_cls_head = mlp_func(output_dim=num_angular_bins)
@@ -540,12 +541,12 @@ class Model3DDETR(nn.Module):
         query_xyz = query_xyz.permute(1, 2, 0)
         """
         query_xyz = torch.gather(encoder_xyz, 1, query_indices.unsqueeze(-1).expand(-1, -1, encoder_xyz.size(-1)))
-        
+
         # Positional embedding for the query points using default Fourier transform
         positional_embedding = self.positional_embedding(query_xyz, input_range=point_cloud_dims)
         # Query embeddings
         query_embeddings = self.query_projection(positional_embedding)
-        
+
         return query_xyz, query_embeddings
     
     def _break_up_pc(
@@ -651,8 +652,8 @@ class Model3DDETR(nn.Module):
             self.mlp_heads["size_head"](box_features).sigmoid().transpose(1, 2)
         )
         angle_logits = self.mlp_heads["angle_cls_head"](box_features).transpose(1, 2)
-        angle_residual_normalized = self.mlp_heads["angle_residual_head"](box_features).transpose(1, 2)
-        
+        angle_residual_normalized = self.mlp_heads["angle_residual_head"](box_features).clone().transpose(1, 2)
+
         # Reshape the outputs to (num_layers, batch, num_queries, num_output)
         center_offset = center_offset.reshape(num_layers, batch_size, num_queries, -1)
         size_normalized = size_normalized.reshape(num_layers, batch_size, num_queries, -1)
@@ -714,25 +715,33 @@ class Model3DDETR(nn.Module):
     def forward(
         self,
         inputs_list,
+        point_cloud_dims_min,
+        point_cloud_dims_max,
         encoder_only=False
     ):
         """Forward pass of the 3D DETR model.
 
         Args:
             inputs (List[Dict[str, Any]]): Dictionary with point cloud information.
+            point_cloud_dims_min (Tensor): Minimum coordinates of the point cloud.
+            point_cloud_dims_max (Tensor): Maximum coordinates of the point cloud.
             encoder_only (bool, optional): Book to check if this is for encoder only.
                 Defaults to False.
         """
         # List to store batch predictions
         batch_predictions = []
 
-        for input in inputs_list:
+        for input, pcd_dim_min, pcd_dim_max in zip(inputs_list, point_cloud_dims_min, point_cloud_dims_max):
             # Get the point cloud from the input
-            point_clouds = input["pcd_tensor"]
+            # Add a batch dimension that is expected for the by the encoder part
+            point_clouds = input.unsqueeze(dim=0)
+            # point_clouds = input["pcd_tensor"]
             
             # Run it through the encoder
             encoder_xyz, encoder_features, _ = self.run_encoder(point_clouds)
+
             # Modify the shape encoder features
+            # Previously encoder_feature shape was modified to (num_points, batch_size, num_features)
             encoder_features = self.encoder_decoder_projection(
                 encoder_features.permute(1, 2, 0)
             ).permute(2, 0, 1)
@@ -743,10 +752,10 @@ class Model3DDETR(nn.Module):
                     encoder_xyz, encoder_features.transpose(0, 1)
                 )
                 continue
-            
+
             # Append the Point cloud dimensions
             # The below values needs to be hardcoded or gotten from argparse
-            point_cloud_dims = [input["point_cloud_dims_min"], input["point_cloud_dims_max"]]
+            point_cloud_dims = [pcd_dim_min, pcd_dim_max]
 
             # Get the query embeddings
             query_xyz, query_embeddings = self.get_query_embedding(encoder_xyz, point_cloud_dims)
@@ -762,10 +771,10 @@ class Model3DDETR(nn.Module):
 
             # Get the box features
             box_features = self.decoder(
-                target,
-                encoder_features,
-                query_embeddings, # Query position is embeddings
-                encoder_pos # Position is encoder positional embedding
+                tgt=target,
+                memory=encoder_features,
+                query_pos=query_embeddings, # Query position is embeddings
+                pos=encoder_pos # Position is encoder positional embedding
             )[0]
 
             # Predict the bounding boxes
@@ -784,34 +793,34 @@ All the code for the set-aggregation downsampling operation as mentioned in the 
 """
 
 # Function to build pre_encoder
-def build_preencoder(args):
+def build_preencoder(cfg_model):
     """
     Builds the preencoder configuration for the model.
 
     Args:
-        args: An argument parser object that contains the following attributes:
+        cfg_model: An argument parser object that contains the following attributes:
             - use_color (int): A flag indicating whether to use color information (1 for True, 0 for False).
             - encoder_dim (int): The dimension of the encoder output.
 
     Returns:
         list: A list of integers representing the dimensions of the MLP (Multi-Layer Perceptron) used in the preencoder.
     """
-    mlp_dimensions = [3 * int(args.use_color), 64, 128, args.encoder_dim]
+    mlp_dimensions = [3 * int(cfg_model.encoder.use_color), 64, 128, cfg_model.encoder.dim]
     preencoder = PointnetSAModuleVotes(
         radius=0.2,
         nsample=64,
-        npoint=args.preencoder_npoints,
+        npoint=cfg_model.encoder.preencoder_npoints,
         mlp=mlp_dimensions,
         normalize_xyz=True,
     )
     return preencoder
 
 # Function to build encoder
-def build_encoder(args):
+def build_encoder(cfg_model):
     """
     Builds and returns an encoder based on the specified arguments.
     Args:
-        args: An object containing the following attributes:
+        cfg_model: An object containing the following attributes:
             - encoder_type (str): The type of encoder to build. Can be "Vanilla" or "masked".
             - encoder_dim (int): The dimension of the encoder model.
             - encoder_nheads (int): The number of heads in the multi-head attention mechanism.
@@ -826,15 +835,15 @@ def build_encoder(args):
     """
     # if args.encoder_type == "Vanilla":
     encoder_layer = TransformerEncoderLayer(
-        d_model = args.encoder_dim,
-        nhead=args.encoder_nheads,
-        dim_feedforward=args.encoder_ffn_dim,
-        dropout=args.encoder_dropout,
-        activation=args.encoder_activation
+        d_model = cfg_model.encoder.dim,
+        nhead=cfg_model.encoder.nheads,
+        dim_feedforward=cfg_model.encoder.ffn_dim,
+        dropout=cfg_model.encoder.dropout,
+        activation=cfg_model.encoder.activation
     )
     encoder = TransformerEncoder(
         encoder_layer=encoder_layer,
-        num_layers=args.encoder_num_layers
+        num_layers=cfg_model.encoder.num_layers
     )
     # Since we will mostly be using vanilla, we should consider simply removing this masked part
     """
@@ -863,11 +872,11 @@ def build_encoder(args):
     return encoder
 
 # Function to build the decoder
-def build_decoder(args):
+def build_decoder(cfg_model):
     """
     Builds a Transformer decoder using the provided arguments.
     Args:
-        args: An object containing the following attributes:
+        cfg_model: An object containing the following attributes:
             - decoder_dim (int): The dimension of the decoder model.
             - decoder_nhead (int): The number of heads in the multihead attention mechanism.
             - decoder_ffn_dim (int): The dimension of the feedforward network.
@@ -877,14 +886,14 @@ def build_decoder(args):
         TransformerDecoder: A Transformer decoder instance configured with the specified parameters.
     """
     decoder_layer = TransformerDecoderLayer(
-        d_model=args.decoder_dim,
-        nhead=args.decoder_nhead,
-        dim_feedforward=args.decoder_ffn_dim,
-        dropout=args.decoder_dropout,
+        d_model=cfg_model.decoder.dim,
+        nhead=cfg_model.decoder.nhead,
+        dim_feedforward=cfg_model.decoder.ffn_dim,
+        dropout=cfg_model.decoder.dropout,
     )
     decoder = TransformerDecoder(
         decoder_layer=decoder_layer,
-        num_layers=args.decoder_num_layers,
+        num_layers=cfg_model.decoder.num_layers,
         return_intermediate=True
     )
     
@@ -892,11 +901,11 @@ def build_decoder(args):
 
 
 # Function to build the 3D DETR model
-def build_3ddetr_model(args):
+def build_3ddetr_model(cfg_model):
     """
     Build the 3DDETR model and its output processor.
     Args:
-        args (Namespace): The arguments containing model hyperparameters and configurations.
+        cfg_model (Namespace): The arguments containing model hyperparameters and configurations.
             - encoder_dim (int): Dimension of the encoder.
             - decoder_dim (int): Dimension of the decoder.
             - position_embedding (str): Type of position embedding to use.
@@ -907,19 +916,19 @@ def build_3ddetr_model(args):
             - model (Model3DDETR): The constructed 3DDETR model.
             - output_processor (BoxProcessor): The processor for the model's output.
     """
-    pre_encoder = build_preencoder(args)
-    encoder = build_encoder(args)
-    decoder = build_decoder(args)
+    pre_encoder = build_preencoder(cfg_model)
+    encoder = build_encoder(cfg_model)
+    decoder = build_decoder(cfg_model)
     model = Model3DDETR(
         pre_encoder=pre_encoder,
         encoder=encoder,
         decoder=decoder,
-        encoder_dim=args.encoder_dim,
-        decoder_dim=args.decoder_dim,
-        position_embedding=args.position_embedding,
-        mlp_dropout=args.mlp_dropout,
-        num_queries=args.num_queries,
-        num_angular_bins=args.num_angular_bins
+        encoder_dim=cfg_model.encoder.dim,
+        decoder_dim=cfg_model.decoder.dim,
+        position_embedding=cfg_model.position_embedding,
+        mlp_dropout=cfg_model.mlp_dropout,
+        num_queries=cfg_model.num_queries,
+        num_angular_bins=cfg_model.num_angular_bins
     )
     # Not sure if we need the output_processor, so simply comment this out now
     # output_processor = BoxProcessor(config=config)
