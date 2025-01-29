@@ -8,8 +8,11 @@ import torch
 import sys
 import numpy as np
 import wandb
+import hydra
+import omegaconf
 from typing import List
 from torch.utils.data import DataLoader
+from omegaconf import DictConfig
 
 from dataloader import SereactDataloader
 from models.detr3d.model_3ddetr import build_3ddetr_model
@@ -25,15 +28,13 @@ def set_device():
     return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-def build_optimizer(args, model):
+def build_optimizer(cfg_opt, model):
     """
     Build an AdamW optimizer with optional weight decay filtering for biases and parameters with shape length 1.
 
     Args:
-        args (Namespace): A namespace object containing the following attributes:
-            - filter_biases_wd (bool): Whether to filter out biases and parameters with shape length 1 from weight decay.
-            - weight_decay (float): The weight decay to apply to parameters.
-            - base_lr (float): The base learning rate for the optimizer.
+        cfg_opt (Namespace): A namespace object containing the following attributes:
+
         model (torch.nn.Module): The model containing parameters to optimize.
 
     Returns:
@@ -50,24 +51,24 @@ def build_optimizer(args, model):
         if param.requires_grad is False:
             continue
         # Filter out biases and parameters with shape length 1 if specified
-        if args.filter_biases_wd and (len(param.shape) == 1 or name.endswith("bias")):
+        if cfg_opt.filter_biases_wd and (len(param.shape) == 1 or name.endswith("bias")):
             params_without_decay.append(param)
         else:
             params_with_decay.append(param)
 
     # Create parameter groups with appropriate weight decay settings
-    if args.filter_biases_wd:
+    if cfg_opt.filter_biases_wd:
         param_groups = [
             {"params": params_without_decay, "weight_decay": 0.0},
-            {"params": params_with_decay, "weight_decay": args.weight_decay},
+            {"params": params_with_decay, "weight_decay": cfg_opt.weight_decay},
         ]
     else:
         param_groups = [
-            {"params": params_with_decay, "weight_decay": args.weight_decay},
+            {"params": params_with_decay, "weight_decay": cfg_opt.weight_decay},
         ]
 
     # Build the AdamW optimizer with the specified parameter groups and learning rate
-    optimizer = torch.optim.AdamW(param_groups, lr=args.base_lr)
+    optimizer = torch.optim.AdamW(param_groups, lr=cfg_opt.base_lr)
     
     return optimizer
 
@@ -154,8 +155,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--test_split', type=float, default=0.2, help='Test split ratio')
 
     ############ Checkpoint directory ############
-    # parser.add_argument('--checkpoint_dir', type=str, default="/home/s.bhat/Checkpoints/3D_Bbox/", help='Directory to save/load checkpoints')
-    parser.add_argument('--checkpoint_dir', type=str, default="/home/shrinidhibhat/sereact_coding_challenge/Checkpoints/3D_Bbox", help='Directory to save/load checkpoints')
+    parser.add_argument('--checkpoint_dir', type=str, default="/home/s.bhat/Checkpoints/3D_Bbox/", help='Directory to save/load checkpoints')
+    # parser.add_argument('--checkpoint_dir', type=str, default="/home/shrinidhibhat/sereact_coding_challenge/Checkpoints/3D_Bbox", help='Directory to save/load checkpoints')
 
     return parser.parse_args()
 
@@ -203,8 +204,8 @@ def validate_folder_structure(folder_path: str) -> str:
 
     return folder_path
 
-
-def main() -> None:
+@hydra.main(version_base=None, config_path="config", config_name="base_training")
+def main(cfg: DictConfig) -> None:
     """
     Main function to set up and run the 3DDETR training pipeline.
 
@@ -216,19 +217,19 @@ def main() -> None:
     - Handles training or testing based on the arguments.
     """
     
-    args = parse_args()
+    # args = parse_args()
     try:
-        folder_path = validate_folder_structure(args.input_folder_path)
+        folder_path = validate_folder_structure(cfg.input_folder_path)
         print('Valid input folder path')
-        
+
         # Initialize the dataset for training 
-        dataset = SereactDataloader(source_path=folder_path, debug=args.debug)
-        if args.debug:
-            dataset.visualize_data(args.ds_number)
-        
+        dataset = SereactDataloader(source_path=folder_path, debug=cfg.debug.enable)
+        if cfg.debug.enable:
+            dataset.visualize_data(cfg.debug.ds_number)
+
         # Set the device accordingly
         DEVICE = set_device()
-        
+
         # Since the model training requires GPU, raise error if on CPU
         if DEVICE.type == 'cuda':
             torch.cuda.empty_cache()
@@ -238,7 +239,7 @@ def main() -> None:
             raise RuntimeError("GPU not available. Please check if CUDA is enabled.")
         
         # Set random seeds for reproducibility
-        seed = args.seed
+        seed = cfg.seed
         # Consistent for numpy
         np.random.seed(seed)
         # Consistent for pytorch
@@ -248,61 +249,63 @@ def main() -> None:
         
         # Setup and build the 3DDETR model
         print(f"Setting and building the 3DDETR model")
-        model = build_3ddetr_model(args)
+        model = build_3ddetr_model(cfg.model)
         model.to(DEVICE)
         
         # Setup and build the loss object
         print(f"Setting up the loss object")
-        criterion = build_loss_object(args) # Need to add config here or change things
+        criterion = build_loss_object(cfg.loss)
 
         # Create dataset and dataloaders
         print(f"Initializing the dataset and dataloaders")
         train_dataset, test_dataset = dataset.get_datasets(
-            test_size=args.test_split
+            test_size=cfg.test_split
         )
 
         train_loader = DataLoader(
             train_dataset,
-            batch_size=args.batch_size,
+            batch_size=cfg.batch_size,
             shuffle=True,
             collate_fn=collate_fn,
-            num_workers=args.num_workers,
+            num_workers=cfg.num_workers,
             worker_init_fn=worker_init_fn,
         )
         test_loader = DataLoader(
             test_dataset,
-            batch_size=args.batch_size,
+            batch_size=cfg.batch_size,
             shuffle=False,
             collate_fn=collate_fn,
-            num_workers=args.num_workers,
+            num_workers=cfg.num_workers,
         )
 
         # Setup optimizer
         print(f"Setting up the optimizer")
-        optimizer = build_optimizer(args, model)
+        optimizer = build_optimizer(cfg.optimizer, model)
 
         # Create a learning rate scheduler
-        if args.lr_scheduler == "cosine":
+        if cfg.optimizer.lr_scheduler == "cosine":
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=args.max_epochs
+                optimizer, T_max=cfg.max_epochs
             )
-        elif args.lr_scheduler == "cosine_warmup":
+        elif cfg.optimizer.lr_scheduler == "cosine_warmup":
             scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                optimizer, T_0=args.warm_lr_epochs, T_mult=2
+                optimizer, T_0=cfg.optimizer.warm_lr_epochs, T_mult=2
             )
         else:
-            raise ValueError(f"Invalid learning rate scheduler: {args.lr_scheduler}")
+            raise ValueError(f"Invalid learning rate scheduler: {cfg.optimizer.lr_scheduler}")
 
         # Initialize weights and biases logger
-        wandb.init(project="3D Bounding box prediction", config=args)
+        # Hydra uses omegaconf to parse the config, so we need to convert it to a dictionary
+        config_dict = omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+        wandb.init(project="3D Bounding box prediction", config=config_dict)
         wandb.watch(model, log="all")
 
         # Resume from checkpoint if applicable.
         start_epoch = 0
-        if args.checkpoint_dir and os.path.exists(args.checkpoint_dir + "checkpoint.pth"):
-            print(f"Loading checkpoint from {args.checkpoint_dir}...")
+        if cfg.checkpoint_dir and os.path.exists(cfg.checkpoint_dir + "checkpoint.pth"):
+            print(f"Loading checkpoint from {cfg.checkpoint_dir}...")
             # Need to also check if the model can be loaded with pre-trained weights
-            checkpoint = torch.load(os.path.join(args.checkpoint_dir, "checkpoint.pth"))
+            checkpoint = torch.load(os.path.join(cfg.checkpoint_dir, "checkpoint.pth"))
 
             # Load the model with weights from checkpoint
             model.load_state_dict(checkpoint["model_state_dict"], strict=True)
@@ -320,18 +323,18 @@ def main() -> None:
             wandb.config.update({"checkpoint_loaded": False})
         
         # Check if there is a valid pre-trained weights path and if so, load the weights
-        if start_epoch == 0 and args.pretrained_weights_path and os.path.isfile(args.pretrained_weights_path):
-            print(f"Loaded pretrained weights from {args.pretrained_weights_path}")
-            model.load_state_dict(torch.load(args.pretrained_weights_path, map_location=DEVICE))
+        if start_epoch == 0 and cfg.model.pretrained_weights_path and os.path.isfile(cfg.model.pretrained_weights_path):
+            print(f"Loaded pretrained weights from {cfg.model.pretrained_weights_path}")
+            model.load_state_dict(torch.load(cfg.model.pretrained_weights_path, map_location=DEVICE))
             wandb.config.update({"pretrained_weights": True})
-            wandb.config.update({"pretrained_weights_path": args.pretrained_weights_path})
+            wandb.config.update({"pretrained_weights_path": cfg.model.pretrained_weights_path})
         else:
             if start_epoch == 0:
                 print("No pretrained weights provided. Training from scratch.")
             wandb.config.update({"pretrained_weights": False})
 
         # Train or test/validate the model.
-        if args.valid_only:
+        if cfg.valid_only:
             print(f"Validation only...")
             validate(
                 model=model,
@@ -343,7 +346,7 @@ def main() -> None:
         else:
             print(f"Starting training...")
             train(
-                args=args,
+                args=cfg,
                 model=model,
                 criterion=criterion,
                 optimizer=optimizer,
