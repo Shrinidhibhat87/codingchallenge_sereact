@@ -652,7 +652,7 @@ class Model3DDETR(nn.Module):
             self.mlp_heads["size_head"](box_features).sigmoid().transpose(1, 2)
         )
         angle_logits = self.mlp_heads["angle_cls_head"](box_features).transpose(1, 2)
-        angle_residual_normalized = self.mlp_heads["angle_residual_head"](box_features).clone().transpose(1, 2)
+        angle_residual_normalized = self.mlp_heads["angle_residual_head"](box_features).transpose(1, 2)
 
         # Reshape the outputs to (num_layers, batch, num_queries, num_output)
         center_offset = center_offset.reshape(num_layers, batch_size, num_queries, -1)
@@ -662,7 +662,7 @@ class Model3DDETR(nn.Module):
         
         # Get the angle residual values
         angle_residual = angle_residual_normalized * (np.pi / angle_residual_normalized.shape[-1])
-        
+
         # Placeholder for outputs
         outputs = []
         
@@ -700,7 +700,7 @@ class Model3DDETR(nn.Module):
                 "angle_contiguous": angle_contiguous,
                 "box_corners": box_corners
             }
-            
+
             outputs.append(box_prediction)
         
         # Intermediate decoder layer outputs are only used during training
@@ -711,7 +711,7 @@ class Model3DDETR(nn.Module):
             "outputs": outputs, # output from the last layer of the decoder
             "auxiliary_outputs": auxiliary_outputs # Output from the intermediate layers of the decoder
         }
-        
+
     def forward(
         self,
         inputs_list,
