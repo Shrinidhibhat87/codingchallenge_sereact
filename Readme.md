@@ -1,17 +1,75 @@
-# Custom Dataloader for Sereact Data
+# 3D Bounding Box Prediction Code
 
-## About the Custom Dataloader
+The intention of the project is to formulate and End-to-End deep learning approach that results in a model that is capable of predicting bounding box coordinates in 3D space when given a pointcloud input.
 
-The dataloader object for the Sereact data is written in this project. The dataloader is capable of showing the RGB image, colored pointcloud, and the colored pointcloud with a bounding box in it.
+## Project Components
 
-To visualize the data, one needs to set the debug flag to True. The syntax is:
+The project consists of several key components:
+
+1. **Custom Dataloader with Data Augmentation Methods**
+    - The dataloader is designed to handle the Sereact data, providing functionalities to display RGB images, colored pointclouds, and pointclouds with bounding boxes.
+    - Data augmentation methods are included to enhance the training process.
+
+2. **Trainer Class**
+    - Responsible for training and evaluating the model.
+    - Includes methods for setting up the training pipeline, managing epochs, and evaluating performance.
+
+3. **[3DETR Implementation](https://github.com/facebookresearch/3detr/tree/main)**
+    - The project includes an implementation of the 3DETR model with modifications to suit the specific requirements of this project.
+
+4. **Loss Function**
+    - Utilizes Hungarian Matching for set-to-set prediction.
+    - Employs a simple L1 loss for bounding box coordinate predictions.
+
+5. **Utility Folder**
+    - Contains essential functions for importing and exporting models, including support for lower precision models.
+
+These components work together to create an end-to-end deep learning solution for 3D bounding box prediction from pointcloud data.
+
+## System Overview
+
+![System Overview](/home/s.bhat/Documents/PersonalDocuments/Sereact/SystemOverview.png)
+
+This image provides a rough and crude idea of the project's overall architecture and workflow.
+
+## Additional Setup Explanation
+Because this project uses C++/CUDA files, especially for point sampling before the TransformerEncoder, ensure that there is no Dynamic linking issue.
+
+To run the script, in the [detr3d repository](models/detr3d/setup.py) we need to go in the repository and run
 ```bash
-python3 main.py <path to folder> --debug<> --ds_number<>
+python3 setup.py build_ext --inplace
 ```
-Example:
-```bash
-python3 main.py /home/shrinidhibhat/TransformerCoding/sereactcoding/data/dl_challenge --debug True --ds_number 15
+This can be confirmed by opening a terminal and simply trying out
+
+```python
+import _ext_src
 ```
+
+## Resolving Dynamic Linking Issues
+If the above step does not work, then there could be an issue with the Dynamic linker to the .so file. Therefore we need to add this to the bashrc in order for it to find the library.
+
+To ensure there are no dynamic linking issues with the C++/CUDA files, follow these steps:
+
+1. **Find the Directory Containing `libc10.so`**
+    - Locate the directory where the `libc10.so` file is stored. This is typically within the PyTorch library directory.
+
+2. **Export the Path to `LD_LIBRARY_PATH`**
+    - Use the following command to export the path:
+    ```bash
+    export LD_LIBRARY_PATH=/path/to/torch/lib:$LD_LIBRARY_PATH
+    ```
+
+3. **Add the Path to `bashrc` and Source It**
+    - Add the export command to your `~/.bashrc` file to ensure it is set for future sessions:
+    ```bash
+    echo 'export LD_LIBRARY_PATH=/path/to/torch/lib:$LD_LIBRARY_PATH' >> ~/.bashrc
+    ```
+    - Source the `~/.bashrc` file to apply the changes immediately:
+    ```bash
+    source ~/.bashrc
+    ```
+
+By following these steps, you can resolve any dynamic linking issues related to the `libc10.so` file.
 
 ## Example Images
 
@@ -29,11 +87,10 @@ Bounding box in PointCloud
 
 ## Future TODO
 
-1. Expand the project to build methods that can do 3D bounding box predictions based on the data.
-    - Research literature out there to get relevant works which can be done in the limited hardware capacity available.
-    - Construct a model or use open-source models based on the literature survey.
-    - Build a training pipeline for model training, including transforms, optimizers, etc.
-2. Once the model is trained, store weights or best checkpoints in order to use later.
-3. Enable infrastructure to deploy the model.
-    - Create a Docker Compose script capable of loading the model using the pre-trained weights.
-    - Ensure the server created has all the necessary dependencies.
+1. Complete ReadMe
+    - Add images for system architecture overview.
+    - Add ways to clone the repository and run the script.
+    - Explain the structure overview.
+2. Code cleanup.
+3. Add more type checkers in order to have uniform coding style.
+4. Add Unit tests using Pytest.
