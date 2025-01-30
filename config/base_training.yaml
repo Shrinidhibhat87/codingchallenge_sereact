@@ -5,8 +5,9 @@ input_folder_path: "/home/s.bhat/Coding/codingchallenge_sereact/data"
 seed: 40
 start_epoch: 0
 max_epochs: 10
-batch_size: 2
+batch_size: 1
 num_workers: 4
+eval_every_epoch: 10
 valid_only: false
 
 model:

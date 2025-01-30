@@ -56,7 +56,7 @@ def all_reduce_average(tensor):
     val = all_reduce_sum(tensor)
     return val / get_world_size()
 
-class Matcher_loss(nn.Module):
+class MatcherLoss(nn.Module):
     def __init__(
         self,
         cost_giou,
@@ -106,13 +106,11 @@ class Matcher_loss(nn.Module):
         assignments = []
         
         # Auxiliary variables useful for batched loss computation
-        # If batch_size == batchsize and nprop == num_queries, remove the lines below.
-        batchsize, nprop = final_cost.shape[0], final_cost.shape[1]
         per_prop_gt_inds = torch.zeros(
-            [batchsize, nprop], dtype=torch.int64, device=outputs["box_corners"].device
+            [batch_size, num_queries], dtype=torch.int64, device=outputs["box_corners"].device
         )
         proposal_matched_mask = torch.zeros(
-            [batchsize, nprop], dtype=torch.float32, device=outputs["box_corners"].device
+            [batch_size, num_queries], dtype=torch.float32, device=outputs["box_corners"].device
         )
         
         # Here, we perform the Hungarian matching
@@ -360,7 +358,7 @@ class SetCriterion(nn.Module):
             targets,
             nums_k2=torch.tensor([targets.shape[1]], device=outputs['box_corners'].device),
             rotated_boxes=False,
-            needs_grad=False # (self.loss_weight_dict["loss_giou_weight"] > 0)
+            needs_grad=True # (self.loss_weight_dict["loss_giou_weight"] > 0)
         )
 
         # Store the GIoU in the outputs dictionary
@@ -451,31 +449,23 @@ class SetCriterion(nn.Module):
         # Return the total loss and the loss dictionary
         return loss, loss_dict, assingments
         
+class LossFunction(nn.Module):
+    def __init__(self, cfg_loss):
+        super().__init__()
 
-def build_loss_object(cfg_loss):
-    """
-    Build the loss object based on the arguments.
+        # Define the matcher loss
+        matcher_loss = MatcherLoss(
+            cost_giou=cfg_loss.matcher_costs.giou,
+            cost_box_corners=cfg_loss.matcher_costs.cost_box_corners
+        )
+        # Define the loss weight dictionary
+        loss_weight_dict = {
+            "loss_giou_weight": cfg_loss.weights.giou,
+            "loss_box_corners_weight": cfg_loss.weights.box_corners
+        }
+        # Define the criterion
+        self.criterion = SetCriterion(matcher_loss=matcher_loss, loss_weight_dict=loss_weight_dict)
 
-    Args:
-        cfg_loss (Dictionary): The parsed arguments.
+    def forward(self, outputs, targets):
 
-    Returns:
-        nn.Module: The loss object.
-    """
-    # There are 4 mjaor components of the matching loss
-    matcher_loss = Matcher_loss(
-        cost_giou=cfg_loss.matcher_costs.giou,
-        cost_box_corners=cfg_loss.matcher_costs.cost_box_corners
-    )
-    
-    loss_weight_dict = {
-        "loss_giou_weight": cfg_loss.weights.giou,
-        "loss_box_corners_weight": cfg_loss.weights.box_corners
-    }
-    
-    criterion = SetCriterion(
-        matcher_loss=matcher_loss,
-        loss_weight_dict=loss_weight_dict
-    )
-
-    return criterion
+        return self.criterion(outputs, targets)
