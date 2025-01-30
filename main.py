@@ -16,8 +16,8 @@ from omegaconf import DictConfig
 
 from dataloader import SereactDataloader
 from models.detr3d.model_3ddetr import build_3ddetr_model
-from losses.loss_3ddetr import build_loss_object
-from trainer.trainer import train, validate
+from losses.loss_3ddetr import LossFunction
+from trainer.trainer import Trainer
 from utils.miscellaneous import worker_init_fn, collate_fn
 from utils.mean_iou_evaluation import IoUEvaluator
 from utils.low_precision_conversion import convert_model_to_low_precision
@@ -250,11 +250,13 @@ def main(cfg: DictConfig) -> None:
         # Setup and build the 3DDETR model
         print(f"Setting and building the 3DDETR model")
         model = build_3ddetr_model(cfg.model)
+        print(f"The model looks like: {model}")
         model.to(DEVICE)
-        
+
         # Setup and build the loss object
         print(f"Setting up the loss object")
-        criterion = build_loss_object(cfg.loss)
+        loss_module = LossFunction(cfg_loss=cfg.loss)
+        # criterion = build_loss_object(cfg.loss)
 
         # Create dataset and dataloaders
         print(f"Initializing the dataset and dataloaders")
@@ -294,6 +296,18 @@ def main(cfg: DictConfig) -> None:
         else:
             raise ValueError(f"Invalid learning rate scheduler: {cfg.optimizer.lr_scheduler}")
 
+        # Build a Trainer object
+        trainer = Trainer(
+            cfg=cfg,
+            model=model,
+            optimizer=optimizer,
+            criterion=loss_module,
+            train_dataloader=train_loader,
+            validate_dataloader=test_loader,
+            scheduler=scheduler,
+            device=DEVICE
+        )
+
         # Initialize weights and biases logger
         # Hydra uses omegaconf to parse the config, so we need to convert it to a dictionary
         config_dict = omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
@@ -321,7 +335,7 @@ def main(cfg: DictConfig) -> None:
         else:
             print("No checkpoint directory with checkpoint path is provided.")
             wandb.config.update({"checkpoint_loaded": False})
-        
+
         # Check if there is a valid pre-trained weights path and if so, load the weights
         if start_epoch == 0 and cfg.model.pretrained_weights_path and os.path.isfile(cfg.model.pretrained_weights_path):
             print(f"Loaded pretrained weights from {cfg.model.pretrained_weights_path}")
@@ -336,25 +350,10 @@ def main(cfg: DictConfig) -> None:
         # Train or test/validate the model.
         if cfg.valid_only:
             print(f"Validation only...")
-            validate(
-                model=model,
-                data_loader=test_loader,
-                device=DEVICE,
-                criterion=criterion,
-                iou_evaluator=IoUEvaluator()
-            )
+            trainer.validate(iou_evaluator=IoUEvaluator())
         else:
             print(f"Starting training...")
-            train(
-                args=cfg,
-                model=model,
-                criterion=criterion,
-                optimizer=optimizer,
-                train_dataloader=train_loader,
-                validate_dataloader=test_loader,
-                scheduler=scheduler,
-                device=DEVICE
-            )
+            trainer.train()
         
         if cfg.export_model:
             print("Start of conversion to low precision formats")
