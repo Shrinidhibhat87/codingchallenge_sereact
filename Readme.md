@@ -32,6 +32,57 @@ These components work together to create an end-to-end deep learning solution fo
 
 This image provides a rough and crude idea of the project's overall architecture and workflow.
 
+
+## Getting Started
+
+To get started with the project, follow these steps:
+
+### Cloning the Repository
+
+First, clone the repository to your local machine using the following command:
+
+```bash
+git clone https://github.com/Shrinidhibhat87/codingchallenge_sereact.git
+cd codingchallenge_sereact
+```
+
+### Setting Up a Python Virtual Environment
+
+Create a Python virtual environment to manage dependencies:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### Installing Required Libraries
+
+Install the required libraries from the `requirements.txt` file:
+
+```bash
+pip install -r requirements.txt
+```
+
+### Handling the `open3d` Library
+
+The `open3d` library is used for visualization purposes and can sometimes be troublesome to install. If you encounter issues, you can either comment out the `open3d` import statements in the code or install it separately:
+
+```bash
+pip install open3d
+```
+
+### Dataset Preparation
+
+Ensure that you have the dataset stored in a dedicated path. The dataloader expects the datasets to be organized in a specific folder structure. Update the dataset path in the configuration file accordingly.
+
+### Running the Project
+
+After setting up the environment and updating the dataset path, you can run the main script:
+
+```bash
+python main.py
+```
+
 ## Additional Setup Explanation
 Because this project uses C++/CUDA files, especially for point sampling before the TransformerEncoder, ensure that there is no Dynamic linking issue.
 
@@ -71,6 +122,28 @@ To ensure there are no dynamic linking issues with the C++/CUDA files, follow th
 
 By following these steps, you can resolve any dynamic linking issues related to the `libc10.so` file.
 
+## Project Structure Overview
+
+The repository is organized as follows:
+
+```
+codingchallenge_sereact/
+├── config/                 # Contains the configuration files to run the project
+├── dataloader/             # Dataloader specific to the dataset
+├── losses/                 # Folder dedicated to handle losses specific to the project
+├── models/                 # Contains model definitions and related scripts
+│   ├── detr3d/             # Implementation of the 3DETR model
+│   ├── _ext_src/            # C++/CUDA extensions for point sampling
+├── trainer/                # Folder containting the trainer class
+├── utility/                # utility folder containing utility functions
+├── requirements.txt        # List of required Python libraries
+├── README.md               # Project documentation
+├── .pre-commit-config.yaml # Configuration for pre-commit hooks
+├── pyproject.toml          # Project configuration file
+└── main.py                 # Main script to run the project
+```
+
+This structure ensures a clear separation of different components, making the project easy to navigate and maintain.
 ## Example Images
 
 Color Image
@@ -88,8 +161,6 @@ Bounding box in PointCloud
 ## Future TODO
 
 1. Complete ReadMe
-    - Add ways to clone the repository and run the script.
-    - Explain the structure overview.
 2. Code cleanup.
 3. Add more type checkers in order to have uniform coding style.
 4. Add Unit tests using Pytest.
