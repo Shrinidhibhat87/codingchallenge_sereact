@@ -3,8 +3,7 @@ Utility file that contains the IoU evaluator class.
 """
 
 import numpy as np
-from shapely.geometry import MultiPoint, Polygon
-from shapely.affinity import scale
+from shapely.geometry import MultiPoint
 
 
 class IoUEvaluator:
@@ -19,7 +18,9 @@ class IoUEvaluator:
         total_boxes (int): Total number of ground truth boxes evaluated.
     """
 
-    def __init__(self, iou_thresholds=[0.25, 0.5]):
+    def __init__(self, iou_thresholds: list[float] = None) -> None:
+        if iou_thresholds is None:
+            iou_thresholds = [0.25, 0.5]
         """
         Initialize the IoUEvaluator with specified IoU thresholds.
 
@@ -29,14 +30,14 @@ class IoUEvaluator:
         self.iou_thresholds = iou_thresholds
         self.reset()
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset the evaluator's metrics for a new evaluation run."""
         self.iou_scores = []
         self.threshold_hits = {t: 0 for t in self.iou_thresholds}
         self.total_boxes = 0
 
     @staticmethod
-    def calculate_iou(box_a, box_b):
+    def calculate_iou(box_a: np.ndarray, box_b: np.ndarray) -> float:
         """
         Compute IoU between two 3D bounding boxes.
         Static method does not take any self, cls variable.
@@ -59,15 +60,15 @@ class IoUEvaluator:
         # projecting the predicted bounding box onto the x-y plane
         # predicted_polygon = Polygon(box_a[:, :2])
         # ground_truth_polygon = Polygon(box_b[:, :2])
-        
+
         # Project to 2D and compute convex hull for each box
-        def get_convex_hull(box):
+        def get_convex_hull(box: np.ndarray) -> MultiPoint:
             points = box[:, :2]
             multipoint = MultiPoint(points)
             hull = multipoint.convex_hull
-            
+
             return hull
-        
+
         # Get the convex hull for each box
         hull_a = get_convex_hull(box_a)
         hull_b = get_convex_hull(box_b)
@@ -82,8 +83,7 @@ class IoUEvaluator:
 
         return intersection / union
 
-
-    def update(self, pred_boxes, gt_boxes):
+    def update(self, pred_boxes: list[np.ndarray], gt_boxes: list[np.ndarray]) -> None:
         """
         Update the evaluator with a batch of predicted and ground truth boxes.
 
@@ -103,7 +103,7 @@ class IoUEvaluator:
             # Track total ground truth boxes processed.
             self.total_boxes += 1
 
-    def compute_metrics(self):
+    def compute_metrics(self) -> dict:
         """
         Compute the final metrics after all updates.
 
@@ -116,13 +116,13 @@ class IoUEvaluator:
             for thresh, hits in self.threshold_hits.items()
         }
 
-        return {"mean_iou": mean_iou, "threshold_accuracy": threshold_accuracy}
+        return {'mean_iou': mean_iou, 'threshold_accuracy': threshold_accuracy}
 
-    def __str__(self):
+    def __str__(self) -> str:
         """Generate a string summary of the evaluator's metrics."""
         metrics = self.compute_metrics()
-        thresh_str = ", ".join(
-            [f"IoU@{t}: {metrics['threshold_accuracy'][t]:.2f}" for t in self.iou_thresholds]
+        thresh_str = ', '.join(
+            [f'IoU@{t}: {metrics["threshold_accuracy"][t]:.2f}' for t in self.iou_thresholds]
         )
 
-        return f"Mean IoU: {metrics['mean_iou']:.2f}, {thresh_str}"
+        return f'Mean IoU: {metrics["mean_iou"]:.2f}, {thresh_str}'
