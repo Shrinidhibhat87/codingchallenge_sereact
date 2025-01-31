@@ -11,7 +11,6 @@ from omegaconf import DictConfig
 
 import wandb
 from utils.mean_iou_evaluation import IoUEvaluator
-from utils.visualize_point_cloud import visualize_bounding_box
 
 
 class Trainer:
@@ -283,7 +282,7 @@ class Trainer:
                         pred_boxes=pred_boxes, assignments=assignments, gt_bbox=gt_bbox
                     )
                 )
-
+                """
                 # Just for visualization purpose right now.
                 visualize_bounding_box(
                     pc_input=inputs[0].cpu().detach().numpy(),
@@ -296,6 +295,7 @@ class Trainer:
                     bbox_points=predicted_bboxes_matched,
                     color_image=None,
                 )
+                """
 
                 # Update IoU evaluator
                 iou_evaluator.update(predicted_bboxes_matched, gt_bboxes_matched)
