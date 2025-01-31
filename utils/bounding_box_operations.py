@@ -2,23 +2,28 @@
 Utility file for Bouning box related operations.
 """
 
-import torch
-import numpy as np
-
 from typing import List
 
+import numpy as np
+import torch
+
+
 @torch.jit.ignore
-def to_list_1d(arr) -> List[float]:
+def to_list_1d(arr: torch.Tensor) -> List[float]:
     arr = arr.detach().cpu().numpy().tolist()
     return arr
 
+
 @torch.jit.ignore
-def to_list_3d(arr) -> List[List[List[float]]]:
+def to_list_3d(arr: torch.Tensor) -> List[List[List[float]]]:
     arr = arr.detach().cpu().numpy().tolist()
     return arr
 
-def computeIntersection(cp1: torch.Tensor, cp2: torch.Tensor, s: torch.Tensor, e: torch.Tensor) -> torch.Tensor:
-    """ Compute the intersection of two line segments.
+
+def computeIntersection(
+    cp1: torch.Tensor, cp2: torch.Tensor, s: torch.Tensor, e: torch.Tensor
+) -> torch.Tensor:
+    """Compute the intersection of two line segments.
 
     Args:
         cp1, cp2: Vertices of the clip polygon edge.
@@ -46,7 +51,7 @@ def computeIntersection(cp1: torch.Tensor, cp2: torch.Tensor, s: torch.Tensor, e
 
 
 def inside(cp1: torch.Tensor, cp2: torch.Tensor, p: torch.Tensor) -> bool:
-    """ Check if a point is inside the clip edge.
+    """Check if a point is inside the clip edge.
 
     Args:
         cp1, cp2: Vertices of the clip polygon edge.
@@ -54,14 +59,14 @@ def inside(cp1: torch.Tensor, cp2: torch.Tensor, p: torch.Tensor) -> bool:
     Returns:
         True if the point is inside the clip edge, False otherwise.
     """
-    return ((cp2[0] - cp1[0]) * (p[1] - cp1[1]) > (cp2[1] - cp1[1]) * (p[0] - cp1[0]) != 0)
+    return (cp2[0] - cp1[0]) * (p[1] - cp1[1]) > (cp2[1] - cp1[1]) * (p[0] - cp1[0]) != 0
 
 
-def polygon_clip_unnest(subjectPolygon, clipPolygon) -> torch.Tensor:
-    """ Clip a polygon with another polygon.
-    
+def polygon_clip_unnest(subjectPolygon: torch.Tensor, clipPolygon: torch.Tensor) -> torch.Tensor:
+    """Clip a polygon with another polygon.
+
     Ref: https://rosettacode.org/wiki/Sutherland-Hodgman_polygon_clipping#Python (Modified)
-    
+
     Args:
         subjectPolygon: A tensor of shape (N, 2) representing the subject polygon vertices.
         clipPolygon: A tensor of shape (M, 2) representing the convex clip polygon vertices.
@@ -100,13 +105,21 @@ def polygon_clip_unnest(subjectPolygon, clipPolygon) -> torch.Tensor:
 
     return outputList
 
-def box_intersection(rect1, rect2, non_rot_inter_areas, nums_k2, inter_areas, approximate):
+
+def box_intersection(
+    rect1: torch.Tensor,
+    rect2: torch.Tensor,
+    non_rot_inter_areas: torch.Tensor,
+    nums_k2: torch.Tensor,
+    inter_areas: torch.Tensor,
+    approximate: torch.Tensor,
+) -> None:
     """
     rect1 - B x K1 x 8 x 3 matrix of box corners
     rect2 - B x K2 x 8 x 3 matrix of box corners
-    non_rot_inter_areas - intersection areas of boxes 
+    non_rot_inter_areas - intersection areas of boxes
     """
-    
+
     B = rect1.shape[0]
     K1 = rect1.shape[1]
     K2 = rect2.shape[1]
@@ -116,19 +129,22 @@ def box_intersection(rect1, rect2, non_rot_inter_areas, nums_k2, inter_areas, ap
             for k2 in range(K2):
                 if k2 >= nums_k2[b]:
                     break
-                
+
                 if approximate and non_rot_inter_areas[b][k1][k2] == 0:
                     continue
-                
+
                 # Compute volume of intersection
                 inter = polygon_clip_unnest(rect1[b, k1], rect2[b, k2])
                 ninter = len(inter)
                 if ninter > 0:  # there is some intersection between the boxes
                     xs = np.array([x[0] for x in inter]).astype(dtype=float)
                     ys = np.array([x[1] for x in inter]).astype(dtype=float)
-                    inter_areas[b, k1, k2] = 0.5 * np.abs(np.dot(xs, np.roll(ys, 1)) - np.dot(ys, np.roll(xs, 1)))
+                    inter_areas[b, k1, k2] = 0.5 * np.abs(
+                        np.dot(xs, np.roll(ys, 1)) - np.dot(ys, np.roll(xs, 1))
+                    )
 
-def enclosing_box3d_vol(corners1, corners2):
+
+def enclosing_box3d_vol(corners1: torch.Tensor, corners2: torch.Tensor) -> torch.Tensor:
     """
     volume of enclosing axis-aligned box
     """
@@ -139,7 +155,6 @@ def enclosing_box3d_vol(corners1, corners2):
     assert corners1.shape[3] == 3
     assert corners2.shape[2] == 8
     assert corners2.shape[3] == 3
-    EPS = 1e-6
 
     corners1 = corners1.clone()
     corners2 = corners2.clone()
@@ -179,7 +194,7 @@ def enclosing_box3d_vol(corners1, corners2):
     return vol
 
 
-def box3d_vol_tensor(corners):
+def box3d_vol_tensor(corners: torch.Tensor) -> torch.Tensor:
     EPS = 1e-6
     reshape = False
     B, K = corners.shape[0], corners.shape[1]
@@ -187,15 +202,9 @@ def box3d_vol_tensor(corners):
         # batch x prop x 8 x 3
         reshape = True
         corners = corners.view(-1, 8, 3)
-    a = torch.sqrt(
-        (corners[:, 0, :] - corners[:, 1, :]).pow(2).sum(dim=1).clamp(min=EPS)
-    )
-    b = torch.sqrt(
-        (corners[:, 1, :] - corners[:, 2, :]).pow(2).sum(dim=1).clamp(min=EPS)
-    )
-    c = torch.sqrt(
-        (corners[:, 0, :] - corners[:, 4, :]).pow(2).sum(dim=1).clamp(min=EPS)
-    )
+    a = torch.sqrt((corners[:, 0, :] - corners[:, 1, :]).pow(2).sum(dim=1).clamp(min=EPS))
+    b = torch.sqrt((corners[:, 1, :] - corners[:, 2, :]).pow(2).sum(dim=1).clamp(min=EPS))
+    c = torch.sqrt((corners[:, 0, :] - corners[:, 4, :]).pow(2).sum(dim=1).clamp(min=EPS))
     vols = a * b * c
     if reshape:
         vols = vols.view(B, K)
@@ -208,7 +217,7 @@ def generalized_box3d_iou_cython(
     nums_k2: torch.Tensor,
     rotated_boxes: bool = True,
     return_inter_vols_only: bool = False,
-):
+) -> torch.Tensor:
     """
     Input:
         corners1: torch Tensor (B, K1, 8, 3), assume up direction is negative Y
@@ -266,12 +275,8 @@ def generalized_box3d_iou_cython(
         rect1 = rect1.cpu().numpy().astype(np.float32)
         rect2 = rect2.cpu().numpy().astype(np.float32)
         nums_k2_np = nums_k2.cpu().detach().numpy().astype(np.int32)
-        non_rot_inter_areas_np = (
-            non_rot_inter_areas.cpu().detach().numpy().astype(np.float32)
-        )
-        box_intersection(
-            rect1, rect2, non_rot_inter_areas_np, nums_k2_np, inter_areas, True
-        )
+        non_rot_inter_areas_np = non_rot_inter_areas.cpu().detach().numpy().astype(np.float32)
+        box_intersection(rect1, rect2, non_rot_inter_areas_np, nums_k2_np, inter_areas, True)
         inter_areas = torch.from_numpy(inter_areas)
     else:
         inter_areas = non_rot_inter_areas
@@ -302,7 +307,7 @@ def generalized_box3d_iou_tensor(
     nums_k2: torch.Tensor,
     rotated_boxes: bool = True,
     return_inter_vols_only: bool = False,
-):
+) -> torch.Tensor:
     # Need comment lines here
     """
     Input:
@@ -310,7 +315,7 @@ def generalized_box3d_iou_tensor(
         corners2: torch Tensor (B, K2, 8, 3), assume up direction is negative Y
         Assumes that the box is only rotated along Z direction
     Returns:
-        B x K1 x K2 matrix of generalized IOU by approximating the boxes to be axis aligned    
+        B x K1 x K2 matrix of generalized IOU by approximating the boxes to be axis aligned
     """
     # Need comment lines here
     assert len(corners1.shape) == 4
@@ -376,8 +381,7 @@ def generalized_box3d_iou_tensor(
                         xs = torch.stack([x[0] for x in inter])
                         ys = torch.stack([x[1] for x in inter])
                         inter_areas[b, k1, k2] = torch.abs(
-                            torch.dot(xs, torch.roll(ys, 1))
-                            - torch.dot(ys, torch.roll(xs, 1))
+                            torch.dot(xs, torch.roll(ys, 1)) - torch.dot(ys, torch.roll(xs, 1))
                         )
         inter_areas.mul_(0.5)
     else:
@@ -401,8 +405,8 @@ def generalized_box3d_iou_tensor(
         gious *= mask
     return gious
 
-generalized_box3d_iou_tensor_jit = torch.jit.script(generalized_box3d_iou_tensor)
 
+generalized_box3d_iou_tensor_jit = torch.jit.script(generalized_box3d_iou_tensor)
 
 
 def generalized_box3d_iou(
@@ -412,7 +416,7 @@ def generalized_box3d_iou(
     rotated_boxes: bool = True,
     return_inter_vols_only: bool = False,
     needs_grad: bool = False,
-):
+) -> torch.Tensor:
     # May need to remove the needs_grad parameter so GIoU is calculated with cython and not tensor_jit
     if needs_grad is True or box_intersection is None:
         context = torch.enable_grad if needs_grad else torch.no_grad
@@ -428,7 +432,8 @@ def generalized_box3d_iou(
                 corners1, corners2, nums_k2, rotated_boxes, return_inter_vols_only
             )
 
-def flip_axis_to_camera_tensor(pc):
+
+def flip_axis_to_camera_tensor(pc: torch.Tensor) -> torch.Tensor:
     """Flip X-right, Y-forward, Z-up to X-right, Y-down, Z-forward."""
     pc2 = torch.clone(pc)
     # cam X,Y,Z = depth X,-Z,Y
@@ -437,7 +442,7 @@ def flip_axis_to_camera_tensor(pc):
     return pc2
 
 
-def roty_batch_tensor(angle):
+def roty_batch_tensor(angle: torch.Tensor) -> torch.Tensor:
     """
     Compute rotation matrices around the Y-axis (yaw) for a batch of angles.
 
@@ -449,7 +454,7 @@ def roty_batch_tensor(angle):
     """
     cos_theta = torch.cos(angle)
     sin_theta = torch.sin(angle)
-    
+
     # Create the rotation matrix
     R = torch.zeros((angle.shape[0], angle.shape[1], 3, 3), device=angle.device)
     R[:, :, 0, 0] = cos_theta
@@ -457,19 +462,21 @@ def roty_batch_tensor(angle):
     R[:, :, 1, 1] = 1.0
     R[:, :, 2, 0] = -sin_theta
     R[:, :, 2, 2] = cos_theta
-    
+
     return R
 
 
-def get_3d_box_batch_tensor(box_size, angle, center):
+def get_3d_box_batch_tensor(
+    box_size: torch.Tensor, angle: torch.Tensor, center: torch.Tensor
+) -> torch.Tensor:
     """
     Generate 3D bounding box corners based on size, rotation, and center.
-    
+
     Args:
         box_size (Tensor): Size of the bounding box (batch_size, num_queries, 3).
         angle (Tensor): Rotation angle in radians (batch_size, num_queries).
         center (Tensor): Center coordinates of the bounding box (batch_size, num_queries, 3).
-    
+
     Returns:
         Tensor: 3D corner coordinates (N, 8, 3).
     """
@@ -477,27 +484,54 @@ def get_3d_box_batch_tensor(box_size, angle, center):
     R = roty_batch_tensor(angle)
 
     # Bounding box dimensions
-    l = box_size[..., 0].unsqueeze(-1)
-    w = box_size[..., 1].unsqueeze(-1)
-    h = box_size[..., 2].unsqueeze(-1)
+    length = box_size[..., 0].unsqueeze(-1)
+    width = box_size[..., 1].unsqueeze(-1)
+    height = box_size[..., 2].unsqueeze(-1)
 
     # Predefine 8 corners in the local coordinate system
     corners_3d = torch.zeros((box_size.shape[0], box_size.shape[1], 8, 3), device=box_size.device)
     corners_3d[..., :, 0] = torch.cat(
-        [l / 2, l / 2, -l / 2, -l / 2,
-        l / 2, l / 2, -l / 2, -l / 2], dim=-1
+        [
+            length / 2,
+            length / 2,
+            -length / 2,
+            -length / 2,
+            length / 2,
+            length / 2,
+            -length / 2,
+            -length / 2,
+        ],
+        dim=-1,
     )
     corners_3d[..., :, 1] = torch.cat(
-        [h / 2, h / 2, h / 2, h / 2,
-         -h / 2, -h / 2, -h / 2, -h / 2], dim=-1
+        [
+            height / 2,
+            height / 2,
+            height / 2,
+            height / 2,
+            -height / 2,
+            -height / 2,
+            -height / 2,
+            -height / 2,
+        ],
+        dim=-1,
     )
     corners_3d[..., :, 2] = torch.cat(
-        [w / 2, -w / 2, -w / 2, w / 2,
-         w / 2, -w / 2, -w / 2, w / 2], dim=-1
+        [
+            width / 2,
+            -width / 2,
+            -width / 2,
+            width / 2,
+            width / 2,
+            -width / 2,
+            -width / 2,
+            width / 2,
+        ],
+        dim=-1,
     )
 
     # Apply rotation and translation to the corners
-    corners_3d = torch.einsum('bqij,bqli->bqli', R, corners_3d) 
+    corners_3d = torch.einsum('bqij,bqli->bqli', R, corners_3d)
     corners_3d += center.unsqueeze(2)
 
     return corners_3d
