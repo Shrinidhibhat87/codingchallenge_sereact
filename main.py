@@ -2,44 +2,42 @@
 Main file.
 """
 
-import argparse
 import os
-import torch
 import sys
-import numpy as np
-import wandb
-import hydra
-import omegaconf
 from typing import List
-from torch.utils.data import DataLoader
+
+import hydra
+import numpy as np
+import omegaconf
+import torch
 from omegaconf import DictConfig
+from torch.utils.data import DataLoader
 
+import wandb
 from dataloader import SereactDataloader
-from models.detr3d.model_3ddetr import build_3ddetr_model
 from losses.loss_3ddetr import LossFunction
+from models.detr3d.model_3ddetr import build_3ddetr_model
 from trainer.trainer import Trainer
-from utils.miscellaneous import worker_init_fn, collate_fn
-from utils.mean_iou_evaluation import IoUEvaluator
 from utils.low_precision_conversion import convert_model_to_low_precision
+from utils.mean_iou_evaluation import IoUEvaluator
+from utils.miscellaneous import collate_fn, worker_init_fn
 
 
-def set_device():
+def set_device() -> torch.device:
     """Set the device to CUDA if GPU available."""
     return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-def build_optimizer(cfg_opt, model):
+def build_optimizer(cfg_opt: DictConfig, model: torch.nn.Module) -> torch.optim.AdamW:
     """
     Build an AdamW optimizer with optional weight decay filtering for biases and parameters with shape length 1.
 
     Args:
-        cfg_opt (Namespace): A namespace object containing the following attributes:
-
+        cfg_opt (DictConfig): A configuration object containing optimizer parameters.
         model (torch.nn.Module): The model containing parameters to optimize.
 
     Returns:
         torch.optim.AdamW: An AdamW optimizer configured with the specified parameters and weight decay settings.
-
     """
     # Initialize lists to hold parameters with and without weight decay
     params_with_decay = []
@@ -51,7 +49,7 @@ def build_optimizer(cfg_opt, model):
         if param.requires_grad is False:
             continue
         # Filter out biases and parameters with shape length 1 if specified
-        if cfg_opt.filter_biases_wd and (len(param.shape) == 1 or name.endswith("bias")):
+        if cfg_opt.filter_biases_wd and (len(param.shape) == 1 or name.endswith('bias')):
             params_without_decay.append(param)
         else:
             params_with_decay.append(param)
@@ -59,17 +57,17 @@ def build_optimizer(cfg_opt, model):
     # Create parameter groups with appropriate weight decay settings
     if cfg_opt.filter_biases_wd:
         param_groups = [
-            {"params": params_without_decay, "weight_decay": 0.0},
-            {"params": params_with_decay, "weight_decay": cfg_opt.weight_decay},
+            {'params': params_without_decay, 'weight_decay': 0.0},
+            {'params': params_with_decay, 'weight_decay': cfg_opt.weight_decay},
         ]
     else:
         param_groups = [
-            {"params": params_with_decay, "weight_decay": cfg_opt.weight_decay},
+            {'params': params_with_decay, 'weight_decay': cfg_opt.weight_decay},
         ]
 
     # Build the AdamW optimizer with the specified parameter groups and learning rate
     optimizer = torch.optim.AdamW(param_groups, lr=cfg_opt.base_lr)
-    
+
     return optimizer
 
 
@@ -116,7 +114,8 @@ def validate_folder_structure(folder_path: str) -> str:
 
     return folder_path
 
-@hydra.main(version_base=None, config_path="config", config_name="base_training")
+
+@hydra.main(version_base=None, config_path='config', config_name='base_training')
 def main(cfg: DictConfig) -> None:
     """
     Main function to set up and run the 3DDETR training pipeline.
@@ -133,7 +132,7 @@ def main(cfg: DictConfig) -> None:
         folder_path = validate_folder_structure(cfg.input_folder_path)
         print('Valid input folder path')
 
-        # Initialize the dataset for training 
+        # Initialize the dataset for training
         dataset = SereactDataloader(source_path=folder_path, debug=cfg.debug.enable)
         if cfg.debug.enable:
             dataset.visualize_data(cfg.debug.ds_number)
@@ -145,10 +144,10 @@ def main(cfg: DictConfig) -> None:
         if DEVICE.type == 'cuda':
             torch.cuda.empty_cache()
             torch.cuda.set_device(0)
-            print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+            print(f'Using GPU: {torch.cuda.get_device_name(0)}')
         else:
-            raise RuntimeError("GPU not available. Please check if CUDA is enabled.")
-        
+            raise RuntimeError('GPU not available. Please check if CUDA is enabled.')
+
         # Set random seeds for reproducibility
         seed = cfg.seed
         # Consistent for numpy
@@ -157,23 +156,21 @@ def main(cfg: DictConfig) -> None:
         torch.manual_seed(seed)
         # Consistent for GPU
         torch.cuda.manual_seed_all(seed)
-        
+
         # Setup and build the 3DDETR model
-        print(f"Setting and building the 3DDETR model")
+        print('Setting and building the 3DDETR model')
         model = build_3ddetr_model(cfg.model)
-        print(f"The model looks like: {model}")
+        print(f'The model looks like: {model}')
         model.to(DEVICE)
 
         # Setup and build the loss object
-        print(f"Setting up the loss object")
+        print('Setting up the loss object')
         loss_module = LossFunction(cfg_loss=cfg.loss)
         # criterion = build_loss_object(cfg.loss)
 
         # Create dataset and dataloaders
-        print(f"Initializing the dataset and dataloaders")
-        train_dataset, test_dataset = dataset.get_datasets(
-            test_size=cfg.test_split
-        )
+        print('Initializing the dataset and dataloaders')
+        train_dataset, test_dataset = dataset.get_datasets(test_size=cfg.test_split)
 
         train_loader = DataLoader(
             train_dataset,
@@ -192,20 +189,18 @@ def main(cfg: DictConfig) -> None:
         )
 
         # Setup optimizer
-        print(f"Setting up the optimizer")
+        print('Setting up the optimizer')
         optimizer = build_optimizer(cfg.optimizer, model)
 
         # Create a learning rate scheduler
-        if cfg.optimizer.lr_scheduler == "cosine":
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=cfg.max_epochs
-            )
-        elif cfg.optimizer.lr_scheduler == "cosine_warmup":
+        if cfg.optimizer.lr_scheduler == 'cosine':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.max_epochs)
+        elif cfg.optimizer.lr_scheduler == 'cosine_warmup':
             scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
                 optimizer, T_0=cfg.optimizer.warm_lr_epochs, T_mult=2
             )
         else:
-            raise ValueError(f"Invalid learning rate scheduler: {cfg.optimizer.lr_scheduler}")
+            raise ValueError(f'Invalid learning rate scheduler: {cfg.optimizer.lr_scheduler}')
 
         # Build a Trainer object
         trainer = Trainer(
@@ -216,61 +211,66 @@ def main(cfg: DictConfig) -> None:
             train_dataloader=train_loader,
             validate_dataloader=test_loader,
             scheduler=scheduler,
-            device=DEVICE
+            device=DEVICE,
         )
 
         # Initialize weights and biases logger
         # Hydra uses omegaconf to parse the config, so we need to convert it to a dictionary
         config_dict = omegaconf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
-        wandb.init(project="3D Bounding box prediction", config=config_dict)
-        wandb.watch(model, log="all")
+        wandb.init(project='3D Bounding box prediction', config=config_dict)
+        wandb.watch(model, log='all')
 
         # Resume from checkpoint if applicable.
         start_epoch = 0
-        if cfg.checkpoint_dir and os.path.exists(cfg.checkpoint_dir + "checkpoint.pth"):
-            print(f"Loading checkpoint from {cfg.checkpoint_dir}...")
+        if cfg.checkpoint_dir and os.path.exists(cfg.checkpoint_dir + 'checkpoint.pth'):
+            print(f'Loading checkpoint from {cfg.checkpoint_dir}...')
             # Need to also check if the model can be loaded with pre-trained weights
-            checkpoint = torch.load(os.path.join(cfg.checkpoint_dir, "checkpoint.pth"))
+            checkpoint = torch.load(os.path.join(cfg.checkpoint_dir, 'checkpoint.pth'))
 
             # Load the model with weights from checkpoint
-            model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+            model.load_state_dict(checkpoint['model_state_dict'], strict=True)
 
             # Load optimizer state if available
-            if "optimizer_state_dict" in checkpoint:
-                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            if 'optimizer_state_dict' in checkpoint:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
             # Resume from the last epoch
-            start_epoch = checkpoint.get("epoch", 0) + 1
-            print(f"Resumed from epoch {start_epoch}.")
-            wandb.config.update({"checkpoint_loaded": True, "pretrained_weights": False})
+            start_epoch = checkpoint.get('epoch', 0) + 1
+            print(f'Resumed from epoch {start_epoch}.')
+            wandb.config.update({'checkpoint_loaded': True, 'pretrained_weights': False})
         else:
-            print("No checkpoint directory with checkpoint path is provided.")
-            wandb.config.update({"checkpoint_loaded": False})
+            print('No checkpoint directory with checkpoint path is provided.')
+            wandb.config.update({'checkpoint_loaded': False})
 
         # Check if there is a valid pre-trained weights path and if so, load the weights
-        if start_epoch == 0 and cfg.model.pretrained_weights_path and os.path.isfile(cfg.model.pretrained_weights_path):
-            print(f"Loaded pretrained weights from {cfg.model.pretrained_weights_path}")
-            model.load_state_dict(torch.load(cfg.model.pretrained_weights_path, map_location=DEVICE))
-            wandb.config.update({"pretrained_weights": True})
-            wandb.config.update({"pretrained_weights_path": cfg.model.pretrained_weights_path})
+        if (
+            start_epoch == 0
+            and cfg.model.pretrained_weights_path
+            and os.path.isfile(cfg.model.pretrained_weights_path)
+        ):
+            print(f'Loaded pretrained weights from {cfg.model.pretrained_weights_path}')
+            model.load_state_dict(
+                torch.load(cfg.model.pretrained_weights_path, map_location=DEVICE)
+            )
+            wandb.config.update({'pretrained_weights': True})
+            wandb.config.update({'pretrained_weights_path': cfg.model.pretrained_weights_path})
         else:
             if start_epoch == 0:
-                print("No pretrained weights provided. Training from scratch.")
-            wandb.config.update({"pretrained_weights": False})
+                print('No pretrained weights provided. Training from scratch.')
+            wandb.config.update({'pretrained_weights': False})
 
         # Train or test/validate the model.
         if cfg.valid_only:
-            print(f"Validation only...")
+            print('Validation only...')
             trainer.validate(iou_evaluator=IoUEvaluator())
         else:
-            print(f"Starting training...")
+            print('Starting training...')
             trainer.train()
-        
+
         if cfg.export_model:
-            print("Start of conversion to low precision formats")
+            print('Start of conversion to low precision formats')
             convert_model_to_low_precision(cfg, model, DEVICE)
-            print("Model conversion successul")
-            
+            print('Model conversion successul')
 
     except (NotADirectoryError, FileNotFoundError, ValueError) as e:
         print(e, file=sys.stderr)
