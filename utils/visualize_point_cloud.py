@@ -99,19 +99,22 @@ def visualize_bounding_box(
                 f'Invalid image input. Expected str or PIL image type. Got {type(pil_image)}'
             )
     if len(pc.shape) == 3:
-        point_cloud = pc.transpose(1, 2, 0).reshape(-1, 3)
-
+        pc = pc.transpose(1, 2, 0).reshape(-1, 3)
+    pc = pc.astype(np.float64)
     if color_image is not None:
         image_array = np.asarray(pil_image)
         normalized_array = image_array.astype(np.float64) / 255.0
         np_array_n_3 = np.asarray(normalized_array).reshape(-1, 3)
 
     pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(point_cloud)
-    pcd.colors = o3d.utility.Vector3dVector(np_array_n_3)
+    pcd.points = o3d.utility.Vector3dVector(pc)
+    if color_image is not None:
+        pcd.colors = o3d.utility.Vector3dVector(np_array_n_3)
     vis = o3d.visualization.Visualizer()
     vis.create_window()
     vis.add_geometry(pcd)
+
+    bbox = bbox.astype(np.float64)
     for bounding_box in bbox:
         bbox_3d_points = o3d.geometry.OrientedBoundingBox.create_from_points(
             o3d.utility.Vector3dVector(bounding_box)
