@@ -3,6 +3,7 @@ This file consists of 2 utility files.
 1. visualize_point_cloud: Function used to visualize the pointcloud representation.
 2. visualize_bounding_box: Function used to visualize the pointcloud with bbox in the pc.
 """
+
 from typing import Optional, Union
 
 import numpy as np
