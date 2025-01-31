@@ -1,13 +1,20 @@
-import torch.nn as nn
-from functools import partial
+"""
+File that contains helpder functions for the DETR3D model.
+"""
+
 import copy
+from functools import partial
+
+import torch
+import torch.nn as nn
 
 
 class BatchNormDim1Swap(nn.BatchNorm1d):
     """
     A custom BatchNorm1d layer to handle inputs of shape HW x N x C, used for transformers.
     """
-    def forward(self, x):
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass with reshaping to apply BatchNorm1d.
 
@@ -19,30 +26,30 @@ class BatchNormDim1Swap(nn.BatchNorm1d):
         """
         hw, n, c = x.shape
         x = x.permute(1, 2, 0)  # Reshape to N x C x HW
-        x = super(BatchNormDim1Swap, self).forward(x)
+        x = super().forward(x)
         return x.permute(2, 0, 1)  # Reshape back to HW x N x C
 
 
 # Dictionary for normalization functions
 NORM_DICT = {
-    "bn": BatchNormDim1Swap,
-    "bn1d": nn.BatchNorm1d,
-    "id": nn.Identity,
-    "ln": nn.LayerNorm,
+    'bn': BatchNormDim1Swap,
+    'bn1d': nn.BatchNorm1d,
+    'id': nn.Identity,
+    'ln': nn.LayerNorm,
 }
 
 # Dictionary for activation functions
 ACTIVATION_DICT = {
-    "relu": partial(nn.ReLU, inplace=False),
-    "gelu": nn.GELU,
-    "leakyrelu": partial(nn.LeakyReLU, negative_slope=0.1),
+    'relu': partial(nn.ReLU, inplace=False),
+    'gelu': nn.GELU,
+    'leakyrelu': partial(nn.LeakyReLU, negative_slope=0.1),
 }
 
 # Dictionary for weight initialization methods
 WEIGHT_INIT_DICT = {
-    "xavier_uniform": nn.init.xavier_uniform_,
+    'xavier_uniform': nn.init.xavier_uniform_,
 }
 
 
-def get_clones(module, N):
+def get_clones(module: nn.Module, N: int) -> nn.ModuleList:
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
