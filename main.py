@@ -73,94 +73,6 @@ def build_optimizer(cfg_opt, model):
     return optimizer
 
 
-def parse_args() -> argparse.Namespace:
-    """
-    Parse command-line arguments.
-
-    Returns:
-        argparse.Namespace: Parsed command-line arguments containing the folder path.
-    """
-    parser = argparse.ArgumentParser(description='Dataloader parser.')
-    
-    ############ Input folder path ############
-    parser.add_argument(
-        'input_folder_path',
-        type=str,
-        help='Path to the folder containing subfolders with required files',
-    )
-
-    ############ Training Parameters ############
-    parser.add_argument('--seed', type=int, default=40, help='Random seed for reproducibility')
-    parser.add_argument('--start_epoch', type=int, default=0, help='Epoch to start training from')
-    parser.add_argument('--max_epochs', type=int, default=10, help='Number of epochs to train')
-    parser.add_argument('--batch_size', type=int, default=2, help='Batch size for training')
-    parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for dataloader')    
-    
-    ############ Testing Parameters ############
-    parser.add_argument('--valid_only', type=bool, default=False, help='Flag to run validation only')
-
-    ############ Model parameters ############
-    ########## Preencoder and Encoder parameters ##########
-    parser.add_argument('--encoder_dim', default=256, type=int)
-    parser.add_argument("--use_color", default=False, action="store_true")
-    parser.add_argument("--encoder_nheads", default=4, type=int)
-    parser.add_argument("--encoder_ffn_dim", default=128, type=int)
-    parser.add_argument("--encoder_dropout", default=0.1, type=float)
-    parser.add_argument("--encoder_activation", default='relu', type=str)
-    parser.add_argument("--encoder_num_layers", default=3, type=int)
-    parser.add_argument("--encoder_type", default='vanilla', type=str)
-    parser.add_argument("--preencoder_npoints", default=2048, type=int)
-    # Maybe need some parameters for the preencoder
-    ########## Decoder parameters ##########
-    parser.add_argument('--decoder_dim', default=256, type=int)
-    parser.add_argument("--decoder_nhead", default=4, type=int)
-    parser.add_argument("--decoder_ffn_dim", default=256, type=int)
-    parser.add_argument("--decoder_dropout", default=0.1, type=float)
-    parser.add_argument("--decoder_num_layers", default=3, type=int)
-    ########## Other parameters ##########
-    parser.add_argument("--position_embedding", default='fourier', type=str, choices=['sine', 'fourier'])
-    parser.add_argument("--mlp_dropout", default=0.3, type=float)
-    parser.add_argument("--num_queries", default=256, type=int)
-    parser.add_argument("--num_angular_bins", default=12, type=int)
-    parser.add_argument("--pretrained_weights_path", default=None, type=str, help="Path to pretrained weights")
-    
-    ############ Optimizer variables ############
-    parser.add_argument("--base_lr", default=5e-4, type=float)
-    parser.add_argument("--warm_lr", default=1e-6, type=float)
-    parser.add_argument("--warm_lr_epochs", default=9, type=int)
-    parser.add_argument("--final_lr", default=1e-6, type=float)
-    parser.add_argument("--lr_scheduler", default="cosine", type=str)
-    parser.add_argument("--weight_decay", default=0.1, type=float)
-    parser.add_argument("--filter_biases_wd", default=False, action="store_true")
-    parser.add_argument(
-        "--clip_gradient", default=0.1, type=float, help="Max L2 norm of the gradient"
-    )
-
-    ############ Loss related parameters ############
-    ##### Set Loss #####
-    parser.add_argument("--matcher_cost_giou", default=2.0, type=float)
-    parser.add_argument("--matcher_cost_center", default=0.0, type=float)
-    parser.add_argument("--matcher_cost_objectness", default=0.0, type=float)
-    ##### Loss Weights #####
-    parser.add_argument("--loss_giou_weight", default=0.0, type=float)
-    parser.add_argument("--loss_center_weight", default=5.0, type=float)
-    parser.add_argument("--loss_angle_cls_weight", default=0.1, type=float)
-    parser.add_argument("--loss_angle_reg_weight", default=0.5, type=float)
-    parser.add_argument("--loss_size_weight", default=1.0, type=float)
-    parser.add_argument("--loss_no_object_weight", default=0.2, type=float)
-    
-    ############ Miscellaneous parameters ############
-    parser.add_argument('--debug', type=bool, default=False, help='Flag to degug and visualize')
-    parser.add_argument('--ds_number', type=int, default=13, help='Data set index to visualize')
-    parser.add_argument('--test_split', type=float, default=0.2, help='Test split ratio')
-
-    ############ Checkpoint directory ############
-    parser.add_argument('--checkpoint_dir', type=str, default="/home/s.bhat/Checkpoints/3D_Bbox/", help='Directory to save/load checkpoints')
-    # parser.add_argument('--checkpoint_dir', type=str, default="/home/shrinidhibhat/sereact_coding_challenge/Checkpoints/3D_Bbox", help='Directory to save/load checkpoints')
-
-    return parser.parse_args()
-
-
 def validate_folder_structure(folder_path: str) -> str:
     """
     Validate the folder structure to ensure it contains subdirectories, each with specific required files.
@@ -216,8 +128,7 @@ def main(cfg: DictConfig) -> None:
     - Builds the model, loss object, and optimizer.
     - Handles training or testing based on the arguments.
     """
-    
-    # args = parse_args()
+
     try:
         folder_path = validate_folder_structure(cfg.input_folder_path)
         print('Valid input folder path')
