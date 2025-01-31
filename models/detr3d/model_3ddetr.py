@@ -5,24 +5,23 @@ There are some noteworthy changes that have been made to the code.
 """
 
 import math
+from functools import partial
 
 import numpy as np
 import torch
 import torch.nn as nn
+from omegaconf import DictConfig
 
-from functools import partial
-from torch import nn
-
-from models.detr3d.helpers import (ACTIVATION_DICT, NORM_DICT, WEIGHT_INIT_DICT)
-from models.detr3d.transformer_detr import(
-    MaskedTransformerEncoder, TransformerDecoder,
-    TransformerDecoderLayer, TransformerEncoder,
-    TransformerEncoderLayer
-)
+from models.detr3d.helpers import ACTIVATION_DICT, NORM_DICT, WEIGHT_INIT_DICT
 from models.detr3d.pointnet2 import PointnetSAModuleVotes
-from utils.miscellaneous import shift_scale_points, scale_points, farthest_point_sample
-from utils.bounding_box_operations import get_3d_box_batch_tensor, flip_axis_to_camera_tensor
-
+from models.detr3d.transformer_detr import (
+    TransformerDecoder,
+    TransformerDecoderLayer,
+    TransformerEncoder,
+    TransformerEncoderLayer,
+)
+from utils.bounding_box_operations import flip_axis_to_camera_tensor, get_3d_box_batch_tensor
+from utils.miscellaneous import farthest_point_sample, scale_points, shift_scale_points
 
 
 class GenericMLP(nn.Module):
@@ -44,34 +43,38 @@ class GenericMLP(nn.Module):
         output_use_norm (bool, optional): Whether to apply normalization on the output. Default is False.
         weight_init_name (str, optional): The name of the weight initialization method. Default is None.
     """
+
     def __init__(
         self,
-        input_dim,
-        hidden_dims,
-        output_dim,
-        norm_fn_name=None,
-        activation="relu",
-        use_conv=False,
-        dropout=None,
-        hidden_use_bias=False,
-        output_use_bias=True,
-        output_use_activation=False,
-        output_use_norm=False,
-        weight_init_name=None,
-    ):
+        input_dim: int,
+        hidden_dims: list[int],
+        output_dim: int,
+        norm_fn_name: str = None,
+        activation: str = 'relu',
+        use_conv: bool = False,
+        dropout: float | list[float] = None,
+        hidden_use_bias: bool = False,
+        output_use_bias: bool = True,
+        output_use_activation: bool = False,
+        output_use_norm: bool = False,
+        weight_init_name: str = None,
+    ) -> None:
         super().__init__()
-        
+
         # Select activation function
         activation = ACTIVATION_DICT[activation]
         norm = None
-        
+
         # Select normalization function
         if norm_fn_name is not None:
             norm = NORM_DICT[norm_fn_name]
-        if norm_fn_name == "ln" and use_conv:
+        if norm_fn_name == 'ln' and use_conv:
             # Use GroupNorm as a substitute for LayerNorm in Conv1d
             # NEED TO READ MORE ABOUT THIS
-            norm = lambda x: nn.GroupNorm(1, x)
+            def group_norm(x: torch.Tensor) -> nn.GroupNorm:
+                return nn.GroupNorm(1, x)
+
+            norm = group_norm
 
         # Ensure dropout is a list if specified
         if dropout is not None:
@@ -87,14 +90,14 @@ class GenericMLP(nn.Module):
             else:
                 layer = nn.Linear(prev_dim, x, bias=hidden_use_bias)
             layers.append(layer)
-            
+
             # Add normalization if specified
             if norm:
                 layers.append(norm(x))
-            
+
             # Add activation
             layers.append(activation())
-            
+
             # Add dropout if specified
             if dropout is not None:
                 layers.append(nn.Dropout(p=dropout[idx], inplace=False))
@@ -121,7 +124,7 @@ class GenericMLP(nn.Module):
         if weight_init_name is not None:
             self.do_weight_init(weight_init_name)
 
-    def do_weight_init(self, weight_init_name):
+    def do_weight_init(self, weight_init_name: str) -> None:
         """
         Apply weight initialization to the layers.
 
@@ -129,11 +132,11 @@ class GenericMLP(nn.Module):
             weight_init_name (str): The name of the weight initialization method.
         """
         func = WEIGHT_INIT_DICT[weight_init_name]
-        for (_, param) in self.named_parameters():
+        for _, param in self.named_parameters():
             if param.dim() > 1:  # Skip batch normalization/layer normalization parameters
                 func(param)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass of the MLP.
 
@@ -159,34 +162,39 @@ class PositionEmbeddingCoordsSine(nn.Module):
         d_in (int, optional): Input dimensionality. Default is 3.
         gauss_scale (float, optional): Scale for Gaussian random matrix used in Fourier embeddings. Default is 1.0.
     """
+
     def __init__(
         self,
-        temperature=10000,
-        normalize=False,
-        scale=None,
-        pos_type="fourier",
-        d_pos=None,
-        d_in=3,
-        gauss_scale=1.0,
-    ):
+        temperature: int = 10000,
+        normalize: bool = False,
+        scale: float = None,
+        pos_type: str = 'fourier',
+        d_pos: int = None,
+        d_in: int = 3,
+        gauss_scale: float = 1.0,
+    ) -> None:
         super().__init__()
         self.temperature = temperature
         self.normalize = normalize
         if scale is not None and not normalize:
-            raise ValueError("normalize should be True if scale is passed")
+            raise ValueError('normalize should be True if scale is passed')
         if scale is None:
             scale = 2 * math.pi
-        assert pos_type in ["sine", "fourier"], "pos_type must be 'sine' or 'fourier'"
+        assert pos_type in ['sine', 'fourier'], "pos_type must be 'sine' or 'fourier'"
         self.pos_type = pos_type
         self.scale = scale
-        
-        if pos_type == "fourier":
-            assert d_pos is not None and d_pos % 2 == 0, "d_pos must be provided and even for 'fourier'"
+
+        if pos_type == 'fourier':
+            assert d_pos is not None and d_pos % 2 == 0, (
+                "d_pos must be provided and even for 'fourier'"
+            )
             B = torch.empty((d_in, d_pos // 2)).normal_() * gauss_scale
-            self.register_buffer("gauss_B", B)
+            self.register_buffer('gauss_B', B)
             self.d_pos = d_pos
 
-    def get_sine_embeddings(self, xyz, num_channels, input_range):
+    def get_sine_embeddings(
+        self, xyz: torch.Tensor, num_channels: int, input_range: tuple
+    ) -> torch.Tensor:
         """
         Compute sine positional embeddings.
 
@@ -207,23 +215,25 @@ class PositionEmbeddingCoordsSine(nn.Module):
         if ndim % 2 != 0:
             ndim -= 1
         rems = num_channels - (ndim * xyz.shape[2])
-        
+
         final_embeds = []
         for d in range(xyz.shape[2]):
             cdim = ndim + (2 if rems > 0 else 0)
             rems -= 2 if rems > 0 else 0
-            
+
             dim_t = torch.arange(cdim, dtype=torch.float32, device=xyz.device)
             dim_t = self.temperature ** (2 * (dim_t // 2) / cdim)
-            
+
             raw_pos = xyz[:, :, d] * self.scale
             pos = raw_pos[:, :, None] / dim_t
             pos = torch.stack((pos[:, :, 0::2].sin(), pos[:, :, 1::2].cos()), dim=3).flatten(2)
             final_embeds.append(pos)
-        
+
         return torch.cat(final_embeds, dim=2).permute(0, 2, 1)
 
-    def get_fourier_embeddings(self, xyz, num_channels=None, input_range=None):
+    def get_fourier_embeddings(
+        self, xyz: torch.Tensor, num_channels: int = None, input_range: tuple = None
+    ) -> torch.Tensor:
         """
         Compute Fourier positional embeddings.
 
@@ -240,18 +250,22 @@ class PositionEmbeddingCoordsSine(nn.Module):
 
         bsize, npoints = xyz.shape[0], xyz.shape[1]
         d_out = num_channels // 2
-        
+
         assert d_out <= self.gauss_B.shape[1]
         assert xyz.shape[-1] == self.gauss_B.shape[0]
-        
+
         xyz = xyz.clone()
         if self.normalize:
             xyz = shift_scale_points(xyz, src_range=input_range)
-        
-        xyz_proj = torch.mm(xyz.view(-1, xyz.shape[-1]), self.gauss_B[:, :d_out]).view(bsize, npoints, d_out)
+
+        xyz_proj = torch.mm(xyz.view(-1, xyz.shape[-1]), self.gauss_B[:, :d_out]).view(
+            bsize, npoints, d_out
+        )
         return torch.cat((xyz_proj.sin(), xyz_proj.cos()), dim=2).permute(0, 2, 1)
 
-    def forward(self, xyz, num_channels=None, input_range=None):
+    def forward(
+        self, xyz: torch.Tensor, num_channels: int = None, input_range: tuple = None
+    ) -> torch.Tensor:
         """
         Forward method to compute positional embeddings.
 
@@ -263,37 +277,41 @@ class PositionEmbeddingCoordsSine(nn.Module):
         Returns:
             Tensor: Positional embeddings of shape (batch_size, num_channels, num_points).
         """
-        if self.pos_type == "sine":
+        if self.pos_type == 'sine':
             return self.get_sine_embeddings(xyz, num_channels, input_range)
-        elif self.pos_type == "fourier":
+        elif self.pos_type == 'fourier':
             return self.get_fourier_embeddings(xyz, num_channels, input_range)
         else:
-            raise ValueError(f"Unknown pos_type: {self.pos_type}")
+            raise ValueError(f'Unknown pos_type: {self.pos_type}')
 
-    def extra_repr(self):
+    def extra_repr(self) -> str:
         """
         Extra representation string for printing module info.
 
         Returns:
             str: Extra information about the module.
         """
-        return f"type={self.pos_type}, scale={self.scale}, normalize={self.normalize}, " + \
-               (f"gaussB_shape={self.gauss_B.shape}, gaussB_sum={self.gauss_B.sum().item()}" if hasattr(self, "gauss_B") else "")
+        return f'type={self.pos_type}, scale={self.scale}, normalize={self.normalize}, ' + (
+            f'gaussB_shape={self.gauss_B.shape}, gaussB_sum={self.gauss_B.sum().item()}'
+            if hasattr(self, 'gauss_B')
+            else ''
+        )
 
 
-class BoxProcessor(object):
+class BoxProcessor:
     """
     Convert the output of 3D DETR MLP heads into Bounding boxes.
     """
-    def __init__(self):
+
+    def __init__(self) -> None:
         pass
-    
+
     def compute_predicted_center(
         self,
-        center_offset,
-        query_xyz,
-        point_cloud_dims
-    ):
+        center_offset: torch.Tensor,
+        query_xyz: torch.Tensor,
+        point_cloud_dims: list[torch.Tensor],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Compute the predicted center of the bounding box.
 
@@ -308,14 +326,12 @@ class BoxProcessor(object):
         center_unnormalized = center_offset + query_xyz
         # Normalize the center by shift scaling
         center_normalized = shift_scale_points(center_unnormalized, point_cloud_dims)
-        
+
         return center_normalized, center_unnormalized
-    
+
     def compute_predicted_size(
-        self,
-        size_unnormalized,
-        point_cloud_dims
-    ):
+        self, size_unnormalized: torch.Tensor, point_cloud_dims: list[torch.Tensor]
+    ) -> torch.Tensor:
         """
         Compute the predicted size of the bounding box.
 
@@ -331,14 +347,12 @@ class BoxProcessor(object):
         # Clamp the size to be within the scene scale
         scene_scale = torch.clamp(scene_scale, min=1e-1)
         size_unnormalized = scale_points(size_unnormalized, scene_scale)
-        
+
         return size_unnormalized
-    
+
     def compute_predicted_angle(
-        self,
-        angle_logits,
-        angle_residuals
-    ):
+        self, angle_logits: torch.Tensor, angle_residuals: torch.Tensor
+    ) -> torch.Tensor:
         """
         Compute the predicted angle of the bounding box.
 
@@ -354,7 +368,9 @@ class BoxProcessor(object):
             angle = angle_logits * 0 + angle_residuals * 0
             angle = angle.squeeze(-1).clamp(min=0)
         else:
-            angle_per_cls = 2 * np.pi / 12  # Paper mentions that the angle is quantized into 12 bins
+            angle_per_cls = (
+                2 * np.pi / 12
+            )  # Paper mentions that the angle is quantized into 12 bins
             pred_angle_class = angle_logits.argmax(dim=-1).detach()
             angle_center = angle_per_cls * pred_angle_class
             angle = angle_center + angle_residuals.gather(
@@ -362,16 +378,15 @@ class BoxProcessor(object):
             ).squeeze(-1)
             mask = angle > np.pi
             angle[mask] = angle[mask] - 2 * np.pi
-        
+
         return angle
 
-    
     def box_parameterization_to_corners(
         self,
-        unnormalized_box_center,
-        unnormalized_box_size,
-        box_angle
-    ):
+        unnormalized_box_center: torch.Tensor,
+        unnormalized_box_size: torch.Tensor,
+        box_angle: torch.Tensor,
+    ) -> torch.Tensor:
         """
         Convert box parameterization to corner coordinates.
 
@@ -385,7 +400,7 @@ class BoxProcessor(object):
         """
         # Adjust the centers to the appropriate coordinate system
         box_center_upright = flip_axis_to_camera_tensor(unnormalized_box_center)
-        
+
         # Generate the 3D bounding box corners
         box_corners = get_3d_box_batch_tensor(unnormalized_box_size, box_angle, box_center_upright)
 
@@ -396,49 +411,47 @@ class Model3DDETR(nn.Module):
     """
     The main 3D DETR model as described by the paper:
     http://arxiv.org/abs/2109.08141
-    
+
     Important points of the model:
-    1) Pre-Encoder module is responsible for taking in raw point cloud data and converting to N'X D feature map 
+    1) Pre-Encoder module is responsible for taking in raw point cloud data and converting to N'X D feature map
     2) Encoder architecture containing Multihead attention
     3) Decoder architecture is based on transformer architecture
     """
-    
+
     def __init__(
         self,
-        pre_encoder,
-        encoder,
-        decoder,
-        encoder_dim=256,
-        decoder_dim=256,
-        position_embedding='Fourier',
-        mlp_dropout=0.3,
-        num_queries=256,
-        num_angular_bins=12
-    ):
+        pre_encoder: nn.Module,
+        encoder: nn.Module,
+        decoder: nn.Module,
+        encoder_dim: int = 256,
+        decoder_dim: int = 256,
+        position_embedding: str = 'Fourier',
+        mlp_dropout: float = 0.3,
+        num_queries: int = 256,
+        num_angular_bins: int = 12,
+    ) -> None:
         # Calling parent constructor and initializing the variables
         super().__init__()
         self.pre_encoder = pre_encoder
         self.encoder = encoder
-        
+
         # If inductive bias is needed we can then add masking checks to introduce inductive bias
         # Create a member for encoder to decoder projection
         self.encoder_decoder_projection = GenericMLP(
             input_dim=encoder_dim,
-            hidden_dims=[encoder_dim], # if inductive bias is needed, we need to add a hidden layer
+            hidden_dims=[encoder_dim],  # if inductive bias is needed, we need to add a hidden layer
             output_dim=decoder_dim,
-            norm_fn_name='bn1d', # Was 'bn1d'
+            norm_fn_name='bn1d',  # Was 'bn1d'
             activation='relu',
             use_conv=True,
             output_use_activation=True,
             output_use_norm=True,
-            output_use_bias=False
+            output_use_bias=False,
         )
-        
+
         # Member for positional embedding
         self.positional_embedding = PositionEmbeddingCoordsSine(
-            d_pos=decoder_dim,
-            pos_type=position_embedding,
-            normalize=True
+            d_pos=decoder_dim, pos_type=position_embedding, normalize=True
         )
 
         # Member for query projection
@@ -448,32 +461,22 @@ class Model3DDETR(nn.Module):
             output_dim=decoder_dim,
             use_conv=True,
             output_use_activation=True,
-            hidden_use_bias=True
+            hidden_use_bias=True,
         )
-        
+
         # Member for decoder
         self.decoder = decoder
-        
+
         # Need to build MLP heads
-        self.build_mlp_heads(
-            decoder_dim,
-            mlp_dropout,
-            num_angular_bins
-        )
-        
+        self.build_mlp_heads(decoder_dim, mlp_dropout, num_angular_bins)
+
         # Member for number of queries
         self.num_queries = num_queries
-        
+
         # Member for converting MLP output to bounding boxes
         self.box_processor = BoxProcessor()
-        
-        
-    def build_mlp_heads(
-        self,
-        decoder_dim,
-        mlp_dropout,
-        num_angular_bins
-    ):
+
+    def build_mlp_heads(self, decoder_dim: int, mlp_dropout: float, num_angular_bins: int) -> None:
         """Builds the MLP heads for the 3D bounding box detection model.
 
         Args:
@@ -490,9 +493,9 @@ class Model3DDETR(nn.Module):
             use_conv=True,
             hidden_dims=[decoder_dim, decoder_dim],
             dropout=mlp_dropout,
-            input_dim=decoder_dim
+            input_dim=decoder_dim,
         )
-        
+
         # The bounding box head is a 3D bounding box
         # MLP head for the various 3D bounding box parameters
         center_head = mlp_func(output_dim=3)
@@ -503,21 +506,20 @@ class Model3DDETR(nn.Module):
         angle_cls_head = mlp_func(output_dim=num_angular_bins)
         # Angle regression head: Finetune the residual within the classification to give continuous value
         angle_reg_head = mlp_func(output_dim=num_angular_bins)
-        
-        # Aggregate the individual heads
-        self.mlp_heads = nn.ModuleDict([
-            ("center_head", center_head),
-            ("size_head", size_head),
-            ("angle_cls_head", angle_cls_head),
-            ("angle_residual_head", angle_reg_head),
-        ])
 
-    
+        # Aggregate the individual heads
+        self.mlp_heads = nn.ModuleDict(
+            [
+                ('center_head', center_head),
+                ('size_head', size_head),
+                ('angle_cls_head', angle_cls_head),
+                ('angle_residual_head', angle_reg_head),
+            ]
+        )
+
     def get_query_embedding(
-        self,
-        encoder_xyz,
-        point_cloud_dims
-    ):
+        self, encoder_xyz: torch.Tensor, point_cloud_dims: list[torch.Tensor]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Generate query embeddings by sampling points from the encoder output and applying positional encoding.
 
@@ -533,14 +535,16 @@ class Model3DDETR(nn.Module):
         query_indices = farthest_point_sample(encoder_xyz, self.num_queries)
         # Convert to long
         query_indices = query_indices.long()
-        
+
         # Convert to xyz
         """
         query_xyz = [torch.gather(encoder_xyz[..., x], 1, query_indices) for x in range(3)]
         query_xyz = torch.stack(query_xyz)
         query_xyz = query_xyz.permute(1, 2, 0)
         """
-        query_xyz = torch.gather(encoder_xyz, 1, query_indices.unsqueeze(-1).expand(-1, -1, encoder_xyz.size(-1)))
+        query_xyz = torch.gather(
+            encoder_xyz, 1, query_indices.unsqueeze(-1).expand(-1, -1, encoder_xyz.size(-1))
+        )
 
         # Positional embedding for the query points using default Fourier transform
         positional_embedding = self.positional_embedding(query_xyz, input_range=point_cloud_dims)
@@ -548,11 +552,8 @@ class Model3DDETR(nn.Module):
         query_embeddings = self.query_projection(positional_embedding)
 
         return query_xyz, query_embeddings
-    
-    def _break_up_pc(
-        self,
-        pc
-    ):
+
+    def _break_up_pc(self, pc: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Break up the point cloud into coordinates and features.
             pc (torch.Tensor): A point cloud tensor of shape (N, M, C) where N is the batch size,
                        M is the number of points, and C is the number of channels. The first
@@ -564,20 +565,19 @@ class Model3DDETR(nn.Module):
             - features (torch.Tensor or None): A tensor of shape (N, C-3, M) containing the additional
                                features, or None if there are no additional features.
         """
-        
+
         # Point cloud may contain colours and/or normals, so we need to break them up
         xyz = pc[..., :3].contiguous()
         features = pc[..., 3:].transpose(1, 2).contiguous() if pc.size(-1) > 3 else None
-        
+
         return xyz, features
-    
+
     def run_encoder(
-        self,
-        point_clouds
-    ):
+        self, point_clouds: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Runs the encoder on the given point clouds.
             point_clouds (torch.Tensor): The input point clouds with shape (batch_size, num_points, num_features).
-        
+
         Returns:
             tuple: A tuple containing:
             - encoder_xyz (torch.Tensor): The encoded xyz coordinates with shape (batch_size, num_points, 3).
@@ -586,40 +586,41 @@ class Model3DDETR(nn.Module):
         """
         # break-up point cloud into xyz and features
         xyz, features = self._break_up_pc(point_clouds)
-        
+
         # Pass the point cloud through the pre-encoder
         pre_encoder_xyz, pre_encoder_features, pre_encoder_indices = self.pre_encoder(xyz, features)
-        
+
         # Dimensions are:
         # xyz: (batch_size, num_points, 3)
         # features: (batch_size, num_features, num_points)
         # indices: (batch_size, num_points)
-        
+
         # Multihead attention in encoder expects num_points x batch x num_features
         pre_encoder_features = pre_encoder_features.permute(2, 0, 1)
-        
+
         # XYZ points are in (batch, num_points, 3) order
         encoder_xyz, encoder_features, encoder_indices = self.encoder(
-            pre_encoder_features,
-            xyz=pre_encoder_xyz
+            pre_encoder_features, xyz=pre_encoder_xyz
         )
-        
+
         # Checks
         if encoder_indices is None:
             # Encoder does not perform dowmsampling
             encoder_indices = pre_encoder_indices
         else:
             # Use gather to ensure that it works for both FPS and random sampling
-            encoder_indices = torch.gather(pre_encoder_indices, 1, encoder_indices.type(torch.int64))
-        
+            encoder_indices = torch.gather(
+                pre_encoder_indices, 1, encoder_indices.type(torch.int64)
+            )
+
         return encoder_xyz, encoder_features, encoder_indices
-    
+
     def get_box_prediction(
         self,
-        query_xyz,
-        point_cloud_dims,
-        box_features
-    ):
+        query_xyz: torch.Tensor,
+        point_cloud_dims: list[torch.Tensor],
+        box_features: torch.Tensor,
+    ) -> dict:
         """
         Generate box predictions from the decoder output features.
 
@@ -633,92 +634,86 @@ class Model3DDETR(nn.Module):
                 - "outputs": Output from the last layer of the decoder.
                 - "auxiliary_outputs": Outputs from the intermediate layers of the decoder.
         """
-        
+
         # Dimensions are:
         # query_xyz: (batch_size, num_queries, 3)
         # point_cloud_dims: [min, max] coordinates
         # box_features: (num_layers, num_queries, batch, channel)
-        
+
         # Change box_features to ((num_layers x batch), channel, num_queries)
         box_features = box_features.permute(0, 2, 3, 1)
         num_layers, batch_size, channel, num_queries = box_features.shape
         box_features = box_features.reshape(num_layers * batch_size, channel, num_queries)
 
         # Bounding box prediction parameters
-        center_offset = (
-            self.mlp_heads["center_head"](box_features).sigmoid().transpose(1, 2) - 0.5
+        center_offset = self.mlp_heads['center_head'](box_features).sigmoid().transpose(1, 2) - 0.5
+        size_normalized = self.mlp_heads['size_head'](box_features).sigmoid().transpose(1, 2)
+        angle_logits = self.mlp_heads['angle_cls_head'](box_features).transpose(1, 2)
+        angle_residual_normalized = self.mlp_heads['angle_residual_head'](box_features).transpose(
+            1, 2
         )
-        size_normalized = (
-            self.mlp_heads["size_head"](box_features).sigmoid().transpose(1, 2)
-        )
-        angle_logits = self.mlp_heads["angle_cls_head"](box_features).transpose(1, 2)
-        angle_residual_normalized = self.mlp_heads["angle_residual_head"](box_features).transpose(1, 2)
 
         # Reshape the outputs to (num_layers, batch, num_queries, num_output)
         center_offset = center_offset.reshape(num_layers, batch_size, num_queries, -1)
         size_normalized = size_normalized.reshape(num_layers, batch_size, num_queries, -1)
         angle_logits = angle_logits.reshape(num_layers, batch_size, num_queries, -1)
-        angle_residual_normalized = angle_residual_normalized.reshape(num_layers, batch_size, num_queries, -1)
-        
+        angle_residual_normalized = angle_residual_normalized.reshape(
+            num_layers, batch_size, num_queries, -1
+        )
+
         # Get the angle residual values
         angle_residual = angle_residual_normalized * (np.pi / angle_residual_normalized.shape[-1])
 
         # Placeholder for outputs
         outputs = []
-        
+
         for i in range(num_layers):
             # The box processor class converts the MLP outputs to bounding boxes
             (center_normalized, center_unnormalized) = self.box_processor.compute_predicted_center(
-                center_offset[i],
-                query_xyz,
-                point_cloud_dims
+                center_offset[i], query_xyz, point_cloud_dims
             )
             # Get the angle
             angle_contiguous = self.box_processor.compute_predicted_angle(
-                angle_logits[i],
-                angle_residual[i]
+                angle_logits[i], angle_residual[i]
             )
             # Get size unnormlized
             size_unnormalized = self.box_processor.compute_predicted_size(
-                size_normalized[i],
-                point_cloud_dims
+                size_normalized[i], point_cloud_dims
             )
             # Get the corners of the bounding box
             box_corners = self.box_processor.box_parameterization_to_corners(
-                center_unnormalized,
-                size_unnormalized,
-                angle_contiguous
+                center_unnormalized, size_unnormalized, angle_contiguous
             )
 
             box_prediction = {
-                "center_normalized": center_normalized.contiguous(),
-                "center_unnormalized": center_unnormalized,
-                "size_normalized": size_normalized[i],
-                "angle_logits": angle_logits[i],
-                "angle_residual": angle_residual[i],
-                "angle_residual_normalized": angle_residual_normalized[i],
-                "angle_contiguous": angle_contiguous,
-                "box_corners": box_corners
+                'center_normalized': center_normalized.contiguous(),
+                'center_unnormalized': center_unnormalized,
+                'size_normalized': size_normalized[i],
+                'angle_logits': angle_logits[i],
+                'angle_residual': angle_residual[i],
+                'angle_residual_normalized': angle_residual_normalized[i],
+                'angle_contiguous': angle_contiguous,
+                'box_corners': box_corners,
             }
 
             outputs.append(box_prediction)
-        
+
         # Intermediate decoder layer outputs are only used during training
         auxiliary_outputs = outputs[:-1]
         outputs = outputs[-1]
-        
+
         return {
-            "outputs": outputs, # output from the last layer of the decoder
-            "auxiliary_outputs": auxiliary_outputs # Output from the intermediate layers of the decoder
+            'outputs': outputs,  # output from the last layer of the decoder
+            'auxiliary_outputs': auxiliary_outputs,  # Output from the intermediate layers of the decoder
         }
 
     def forward(
         self,
-        inputs_list,
-        point_cloud_dims_min,
-        point_cloud_dims_max,
-        encoder_only=False
-    ):
+        inputs_list: list[dict[str, torch.Tensor]],
+        point_cloud_dims_min: torch.Tensor,
+        point_cloud_dims_max: torch.Tensor,
+        encoder_only: bool = False,
+    ) -> list[dict[str, torch.Tensor]] | torch.Tensor:
         """Forward pass of the 3D DETR model.
 
         Args:
@@ -731,12 +726,14 @@ class Model3DDETR(nn.Module):
         # List to store batch predictions
         batch_predictions = []
 
-        for input, pcd_dim_min, pcd_dim_max in zip(inputs_list, point_cloud_dims_min, point_cloud_dims_max):
+        for input, pcd_dim_min, pcd_dim_max in zip(
+            inputs_list, point_cloud_dims_min, point_cloud_dims_max
+        ):
             # Get the point cloud from the input
             # Add a batch dimension that is expected for the by the encoder part
             point_clouds = input.unsqueeze(dim=0)
             # point_clouds = input["pcd_tensor"]
-            
+
             # Run it through the encoder
             encoder_xyz, encoder_features, _ = self.run_encoder(point_clouds)
 
@@ -745,12 +742,10 @@ class Model3DDETR(nn.Module):
             encoder_features = self.encoder_decoder_projection(
                 encoder_features.permute(1, 2, 0)
             ).permute(2, 0, 1)
-            
+
             # Note down the shape of the intermediate features
             if encoder_only:
-                batch_predictions.append(
-                    encoder_xyz, encoder_features.transpose(0, 1)
-                )
+                batch_predictions.append(encoder_xyz, encoder_features.transpose(0, 1))
                 continue
 
             # Append the Point cloud dimensions
@@ -773,8 +768,8 @@ class Model3DDETR(nn.Module):
             box_features = self.decoder(
                 tgt=target,
                 memory=encoder_features,
-                query_pos=query_embeddings, # Query position is embeddings
-                pos=encoder_pos # Position is encoder positional embedding
+                query_pos=query_embeddings,  # Query position is embeddings
+                pos=encoder_pos,  # Position is encoder positional embedding
             )[0]
 
             # Predict the bounding boxes
@@ -782,18 +777,18 @@ class Model3DDETR(nn.Module):
 
             # Add the prediction for this sample to the batch
             batch_predictions.append(box_predictions)
-        
+
         # Stack predictions into a single tensor or return as a list
         # The below logic can be checked once we do the forward pass
-        return torch.stack(batch_predictions) if isinstance(batch_predictions[0], torch.Tensor) else batch_predictions
+        return (
+            torch.stack(batch_predictions)
+            if isinstance(batch_predictions[0], torch.Tensor)
+            else batch_predictions
+        )
 
-
-"""
-All the code for the set-aggregation downsampling operation as mentioned in the PointNet++ paper
-"""
 
 # Function to build pre_encoder
-def build_preencoder(cfg_model):
+def build_preencoder(cfg_model: DictConfig) -> PointnetSAModuleVotes:
     """
     Builds the preencoder configuration for the model.
 
@@ -803,7 +798,7 @@ def build_preencoder(cfg_model):
             - encoder_dim (int): The dimension of the encoder output.
 
     Returns:
-        list: A list of integers representing the dimensions of the MLP (Multi-Layer Perceptron) used in the preencoder.
+        PointnetSAModuleVotes: The preencoder module.
     """
     mlp_dimensions = [3 * int(cfg_model.encoder.use_color), 64, 128, cfg_model.encoder.dim]
     preencoder = PointnetSAModuleVotes(
@@ -815,8 +810,9 @@ def build_preencoder(cfg_model):
     )
     return preencoder
 
+
 # Function to build encoder
-def build_encoder(cfg_model):
+def build_encoder(cfg_model: DictConfig) -> TransformerEncoder:
     """
     Builds and returns an encoder based on the specified arguments.
     Args:
@@ -829,50 +825,26 @@ def build_encoder(cfg_model):
             - encoder_activation (str): The activation function to use.
             - encoder_num_layers (int): The number of layers in the encoder.
     Returns:
-        encoder: An instance of TransformerEncoder or MaskedTransformerEncoder based on the specified encoder type.
+        TransformerEncoder: An instance of TransformerEncoder based on the specified encoder type.
     Raises:
         ValueError: If the encoder_type is not recognized.
     """
-    # if args.encoder_type == "Vanilla":
     encoder_layer = TransformerEncoderLayer(
-        d_model = cfg_model.encoder.dim,
+        d_model=cfg_model.encoder.dim,
         nhead=cfg_model.encoder.nheads,
         dim_feedforward=cfg_model.encoder.ffn_dim,
         dropout=cfg_model.encoder.dropout,
-        activation=cfg_model.encoder.activation
+        activation=cfg_model.encoder.activation,
     )
     encoder = TransformerEncoder(
-        encoder_layer=encoder_layer,
-        num_layers=cfg_model.encoder.num_layers
+        encoder_layer=encoder_layer, num_layers=cfg_model.encoder.num_layers
     )
-    # Since we will mostly be using vanilla, we should consider simply removing this masked part
-    """
-    elif args.encoder_type in ["masked"]:
-        encoder_layer = TransformerEncoderLayer(
-            d_model = args.encoder_dim,
-            nhead=args.encoder_nhead,
-            dim_feedforward=args.encoder_ffn_dim,
-            dropout=args.encoder_dropout,
-            activation=args.encoder_activation
-        )
-        # There is a need for interim downsampling that uses the PointNet++ set abstraction
-        # But we are currently ignoring that part
-        masking_radius = [math.pow(x, 2) for x in [0.4, 0.8, 1.2]]
-        
-        encoder = MaskedTransformerEncoder(
-            encoder_layer=encoder_layer,
-            num_layers=3,
-            interim_downsampling=None,
-            masking_radius=masking_radius,
-        )
-    else:
-        raise ValueError(f"Unknown encoder type: {args.encoder_type}")    
-    """
-    
+
     return encoder
 
+
 # Function to build the decoder
-def build_decoder(cfg_model):
+def build_decoder(cfg_model: DictConfig) -> TransformerDecoder:
     """
     Builds a Transformer decoder using the provided arguments.
     Args:
@@ -894,14 +866,14 @@ def build_decoder(cfg_model):
     decoder = TransformerDecoder(
         decoder_layer=decoder_layer,
         num_layers=cfg_model.decoder.num_layers,
-        return_intermediate=True
+        return_intermediate=True,
     )
-    
+
     return decoder
 
 
 # Function to build the 3D DETR model
-def build_3ddetr_model(cfg_model):
+def build_3ddetr_model(cfg_model: DictConfig) -> Model3DDETR:
     """
     Build the 3DDETR model and its output processor.
     Args:
@@ -912,9 +884,7 @@ def build_3ddetr_model(cfg_model):
             - mlp_dropout (float): Dropout rate for the MLP layers.
             - num_queries (int): Number of queries for the decoder.
     Returns:
-        tuple: A tuple containing:
             - model (Model3DDETR): The constructed 3DDETR model.
-            - output_processor (BoxProcessor): The processor for the model's output.
     """
     pre_encoder = build_preencoder(cfg_model)
     encoder = build_encoder(cfg_model)
@@ -928,9 +898,9 @@ def build_3ddetr_model(cfg_model):
         position_embedding=cfg_model.position_embedding,
         mlp_dropout=cfg_model.mlp_dropout,
         num_queries=cfg_model.num_queries,
-        num_angular_bins=cfg_model.num_angular_bins
+        num_angular_bins=cfg_model.num_angular_bins,
     )
     # Not sure if we need the output_processor, so simply comment this out now
     # output_processor = BoxProcessor(config=config)
-    
+
     return model
