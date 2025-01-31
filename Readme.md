@@ -28,7 +28,7 @@ These components work together to create an end-to-end deep learning solution fo
 
 ## System Overview
 
-![System Overview](/home/s.bhat/Documents/PersonalDocuments/Sereact/SystemOverview.png)
+![System Overview]![SystemOverview](https://github.com/user-attachments/assets/1a9b0ea0-0f18-4258-96ac-86e484c40e1c)
 
 This image provides a rough and crude idea of the project's overall architecture and workflow.
 
@@ -88,7 +88,6 @@ Bounding box in PointCloud
 ## Future TODO
 
 1. Complete ReadMe
-    - Add images for system architecture overview.
     - Add ways to clone the repository and run the script.
     - Explain the structure overview.
 2. Code cleanup.
