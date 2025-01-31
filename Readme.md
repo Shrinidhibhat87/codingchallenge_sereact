@@ -28,7 +28,7 @@ These components work together to create an end-to-end deep learning solution fo
 
 ## System Overview
 
-![System Overview]![SystemOverview](https://github.com/user-attachments/assets/1a9b0ea0-0f18-4258-96ac-86e484c40e1c)
+![SystemOverview](https://github.com/user-attachments/assets/1a9b0ea0-0f18-4258-96ac-86e484c40e1c)
 
 This image provides a rough and crude idea of the project's overall architecture and workflow.
 
