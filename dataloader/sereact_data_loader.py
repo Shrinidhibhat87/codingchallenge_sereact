@@ -8,13 +8,17 @@ import os
 from typing import Dict
 
 import numpy as np
+import numpy.typing as npt
 import torch
 from PIL import Image
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
 
 from utils.visualize_image import visualize_masks_on_image
-from utils.visualize_point_cloud import visualize_bounding_box, visualize_point_cloud
+from utils.visualize_point_cloud import (
+    visualize_point_cloud,
+    visualize_point_cloud_with_bounding_box,
+)
 
 
 def check_aspect(crop_range: np.ndarray, aspect_min: float) -> bool:
@@ -178,6 +182,29 @@ class SereactDataloader(Dataset):
         """Returns the total number of data points available."""
         return len(self.folderpath)
 
+    def normalize_pointcloud(self, points: npt.NDArray) -> tuple[npt.NDArray, npt.NDArray, float]:
+        """Normalize point cloud to zero mean and unit sphere.
+
+        Args:
+            points (np.ndarray): Point cloud of shape (3, H, W)
+
+        Returns:
+            tuple: (normalized_points, centroid, scale_factor)
+        """
+        # Reshape to (N, 3)
+        points = points.reshape(3, -1).T
+
+        # Center the point cloud
+        centroid = np.mean(points, axis=0)
+        points = points - centroid
+
+        # Scale to unit sphere
+        max_dist = np.max(np.sqrt(np.sum(points**2, axis=1)))
+        points = points / max_dist
+
+        # (N, 3)
+        return points, centroid, max_dist
+
     def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
         """Abstract __getitem__() method that needs to be overriden.
 
@@ -198,6 +225,11 @@ class SereactDataloader(Dataset):
 
         # 1) Load RGB image
         image = np.array(Image.open(os.path.join(subfolder_path, 'rgb.jpg')).convert('RGB'))
+        # Convert this to a torch tensor for further usage
+        rgb_tensor = torch.from_numpy(image).permute(2, 0, 1).float()
+        # Normalize the image
+        if rgb_tensor.max() > 1:
+            rgb_tensor = rgb_tensor / 255.0
 
         # 2) 3D bounding box
         bbox_3d = np.load(os.path.join(subfolder_path, 'bbox3d.npy'))
@@ -210,13 +242,28 @@ class SereactDataloader(Dataset):
         # 4) Point cloud
         pcd = np.load(os.path.join(subfolder_path, 'pc.npy'))
         # Have a tensor form of the point cloud
-        pcd_tensor = torch.tensor(pcd, dtype=torch.float32).view(-1, 3)
+        pcd_tensor = torch.from_numpy(pcd.reshape(3, -1).T).float()
 
         # Check if asked to apply augmentation.
         if self.augment:
             pcd, bbox_3d = self.apply_augmentation(pcd, bbox_3d)
 
-        # Once loaded, store them in a dict and return them all if the debug is ON
+        # Normalize point cloud
+        pcd_normalized, centroid, max_dist = self.normalize_pointcloud(pcd)
+
+        # Convert to tensor (already in correct shape)
+        pcd_tensor = torch.from_numpy(pcd_normalized).float()
+
+        # Normalize bbox coordinates (shape: (K, 8, 3))
+        bbox_3d_normalized = bbox_3d.copy()
+        for i in range(bbox_3d.shape[0]):
+            for j in range(bbox_3d.shape[1]):
+                bbox_3d_normalized[i, j] = (bbox_3d[i, j] - centroid) / max_dist
+
+        # Convert to tensor
+        bbox_3d_tensor = torch.from_numpy(bbox_3d_normalized).float()
+
+        # Store in data dict
         if self.debug:
             data_dict = {
                 'rgb': image,
@@ -225,13 +272,22 @@ class SereactDataloader(Dataset):
                 'pcd': pcd,
                 'pcd_tensor': pcd_tensor,
                 'bbox3d_tensor': bbox_3d_tensor,
+                'normalization_params': {
+                    'centroid': torch.from_numpy(centroid).float(),
+                    'scale': torch.tensor(max_dist).float(),
+                },
             }
         else:
             data_dict = {
+                'rgb_tensor': rgb_tensor,
                 'pcd_tensor': pcd_tensor,
                 'bbox3d_tensor': bbox_3d_tensor,
-                'point_cloud_dims_min': pcd.reshape(-1, 3).min(axis=0)[:3],
-                'point_cloud_dims_max': pcd.reshape(-1, 3).max(axis=0)[:3],
+                'point_cloud_dims_min': pcd_normalized.reshape(-1, 3).min(axis=0)[:3],
+                'point_cloud_dims_max': pcd_normalized.reshape(-1, 3).max(axis=0)[:3],
+                'normalization_params': {
+                    'centroid': torch.from_numpy(centroid).float(),
+                    'scale': torch.tensor(max_dist).float(),
+                },
             }
 
         return data_dict
@@ -317,4 +373,4 @@ class SereactDataloader(Dataset):
 
         visualize_masks_on_image(image=image, masks=mask)
         visualize_point_cloud(pc_input=pcd, color_image=image)
-        visualize_bounding_box(pc_input=pcd, bbox_points=bbox3d, color_image=image)
+        visualize_point_cloud_with_bounding_box(pc_input=pcd, bbox_points=bbox3d, color_image=image)
