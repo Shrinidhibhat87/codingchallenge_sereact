@@ -2,6 +2,8 @@
 Python file that contains some miscellaneous functions that for augmentation and model training.
 """
 
+from typing import List
+
 import numpy as np
 import torch
 
@@ -125,12 +127,12 @@ def farthest_point_sample(xyz: torch.Tensor, npoint: int) -> torch.Tensor:
     return centroids
 
 
-def collate_fn(batch: list[dict]) -> dict:
+def collate_fn(batch: List[dict]) -> dict:
     """
     Collate function to be used with DataLoader to stack the data in the batch.
 
     Args:
-        batch (list): A list of dictionaries containing the data and label.
+        batch (List): A list of dictionaries containing the data and label.
 
     Returns:
         dict: A dictionary containing the stacked data and label.
@@ -142,12 +144,16 @@ def collate_fn(batch: list[dict]) -> dict:
     # Point cloud min and max dimensions
     pcd_min = [torch.from_numpy(item['point_cloud_dims_min']) for item in batch]
     pcd_max = [torch.from_numpy(item['point_cloud_dims_max']) for item in batch]
+    # RGB tensor image
+    rgb_tensors = [item['rgb_tensor'] for item in batch]
 
     return {
-        'pcd_tensor': pcd_tensors,  # Can't stack here because of different number of points
+        # Can't stack here because of different number of points
+        'pcd_tensor': pcd_tensors,
         'bbox3d_tensor': bbox_tensors,
         'point_cloud_dims_min': pcd_min,
         'point_cloud_dims_max': pcd_max,
+        'rgb_tensor': rgb_tensors,
     }
 
 
