@@ -21,6 +21,7 @@ from trainer.trainer import Trainer
 from utils.low_precision_conversion import convert_model_to_low_precision
 from utils.mean_iou_evaluation import IoUEvaluator
 from utils.miscellaneous import collate_fn, worker_init_fn
+from utils.model_utils import load_weights
 
 
 def set_device() -> torch.device:
@@ -49,7 +50,9 @@ def build_optimizer(cfg_opt: DictConfig, model: torch.nn.Module) -> torch.optim.
         if param.requires_grad is False:
             continue
         # Filter out biases and parameters with shape length 1 if specified
-        if cfg_opt.filter_biases_wd and (len(param.shape) == 1 or name.endswith('bias')):
+        if cfg_opt.filter_biases_wd and (
+            len(param.shape) == 1 or name.endswith('bias') or 'norm' in name
+        ):
             params_without_decay.append(param)
         else:
             params_with_decay.append(param)
@@ -160,7 +163,7 @@ def main(cfg: DictConfig) -> None:
         # Setup and build the 3DDETR model
         print('Setting and building the 3DDETR model')
         model = build_3ddetr_model(cfg.model)
-        print(f'The model looks like: {model}')
+        # print(f'The model looks like: {model}')
         model.to(DEVICE)
 
         # Setup and build the loss object
@@ -249,11 +252,19 @@ def main(cfg: DictConfig) -> None:
             and os.path.isfile(cfg.model.pretrained_weights_path)
         ):
             print(f'Loaded pretrained weights from {cfg.model.pretrained_weights_path}')
-            model.load_state_dict(
-                torch.load(cfg.model.pretrained_weights_path, map_location=DEVICE)
+            load_weights(
+                model=model,
+                pre_trained_weights_path=cfg.model.pretrained_weights_path,
+                device=DEVICE,
             )
-            wandb.config.update({'pretrained_weights': True})
-            wandb.config.update({'pretrained_weights_path': cfg.model.pretrained_weights_path})
+            wandb.config.update(
+                {
+                    'pretrained_weights': True,
+                    'pretrained_weights_path': cfg.model.pretrained_weights_path,
+                    # The part below is only encoder for now
+                    'pretrained_type': 'Encoder_only',
+                }
+            )
         else:
             if start_epoch == 0:
                 print('No pretrained weights provided. Training from scratch.')
