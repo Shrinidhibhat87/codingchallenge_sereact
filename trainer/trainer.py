@@ -6,11 +6,14 @@ import datetime
 import os
 import time
 
+import matplotlib.pyplot as plt
+import numpy.typing as npt
 import torch
 from omegaconf import DictConfig
 
 import wandb
 from utils.mean_iou_evaluation import IoUEvaluator
+from utils.visualize_point_cloud import visualize_gui_pointcloud_with_bounding_boxes
 
 
 class Trainer:
@@ -96,6 +99,141 @@ class Trainer:
         }
         torch.save(sd, checkpoint_name)
 
+    def test_overfit_on_single_sample(
+        self, iou_evaluator: IoUEvaluator, num_epochs: int = 100, log_interval: int = 1
+    ) -> None:
+        """
+        Tests the model's ability to overfit on a single training sample.
+        This is useful for debugging the model's capacity to learn.
+
+        Args:
+            num_epochs (int, optional): Number of epochs to train the model. Defaults to 100.
+            log_interval (int, optional): Interval for logging metrics to the console and wandb. Defaults to 1.
+        """
+        # Get a single training sample
+        single_batch = next(iter(self.train_dataloader))
+
+        # Create a simple evaluator for this test
+        # iou_evaluator = IoUEvaluator()
+
+        print('Starting overfitting test on a single sample...')
+
+        # Count meant to keep track of the 0.25 above IoU values.
+        count = 0
+
+        for epoch in range(1, num_epochs + 1):
+            self.model.train()
+
+            # Reset the evaluator for each epoch
+            iou_evaluator.reset()
+
+            # Move input data to the specified device
+            inputs = [single_batch['pcd_tensor'][0].to(self.device)]
+            gt_bboxes = [single_batch['bbox3d_tensor'][0].to(self.device)]
+            pcd_dims_min = [single_batch['point_cloud_dims_min'][0].to(self.device)]
+            pcd_dims_max = [single_batch['point_cloud_dims_max'][0].to(self.device)]
+
+            # Zero gradients at the start of the batch
+            self.optimizer.zero_grad()
+
+            # Forward pass
+            outputs = self.model(
+                inputs,
+                point_cloud_dims_min=pcd_dims_min,
+                point_cloud_dims_max=pcd_dims_max,
+            )
+
+            # Get predictions
+            output = outputs[0]
+            gt_bbox = gt_bboxes[0]
+            pred_boxes = output['outputs']
+
+            # Compute loss
+            loss, loss_dict, assignments = self.criterion(pred_boxes, gt_bbox, epoch)
+
+            # Backpropagation
+            loss.backward()
+
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.1, norm_type=2.0)
+
+            # Parameter update
+            self.optimizer.step()
+
+            # Update IoU evaluator
+            predicted_bboxes_matched, gt_bboxes_matched = (
+                self.get_predicted_and_gt_boxes_from_assignments(
+                    pred_boxes=pred_boxes, assignments=assignments, gt_bbox=gt_bbox
+                )
+            )
+
+            # Check for vanishing/exploding gradients
+            """
+            if epoch % 10 == 0:
+
+                print("\nGradient Norms:")
+                for name, param in self.model.named_parameters():
+                    if param.grad is not None:
+                        grad_norm = param.grad.norm().item()
+                        # Potential exploding gradient
+                        if grad_norm > 10.0:
+                            print(f"Exploding gradient in {name}: {grad_norm}")
+                        # Potential vanishing gradient
+                        elif grad_norm < 0.0001:
+                            print(f"Vanishing gradient in {name}: {grad_norm}")
+                        #else:
+                            #print(f"{name}: {grad_norm}")
+
+                # Print prediction stats
+                print(f"Pred box stats - Mean: {predicted_bboxes_matched.mean():.3f}, Std: {predicted_bboxes_matched.std():.3f}")
+                print(f"GT box stats - Mean: {gt_bboxes_matched.mean():.3f}, Std: {gt_bboxes_matched.std():.3f}")
+
+                # Print assignment stats
+                print(f"Number of matched boxes: {assignments['proposal_matched_mask'].sum().item()}")
+            """
+
+            # print(f"Iteration {epoch}: Predicted Bounding Box corners: {predicted_bboxes_matched[:5]} and Ground Truth Bounding Box: {gt_bboxes_matched[:5]}")
+            # Checking if the model is producing variability in predictions.
+            # print(f"Epoch {epoch}: Predicted BBox: {predicted_bboxes_matched[0]}")
+
+            # Update the evaluator
+            iou_evaluator.update(predicted_bboxes_matched, gt_bboxes_matched)
+            metrics = iou_evaluator.compute_metrics()
+
+            if metrics['mean_iou'] > 0.25:
+                print(f'Mean IoU value above 0.25: {metrics["mean_iou"]}')
+                self.visualize_box_distributions(predicted_bboxes_matched, gt_bboxes_matched)
+                count += 1
+
+                visualize_gui_pointcloud_with_bounding_boxes(
+                    pcd_points=inputs[0].cpu().detach().numpy(),
+                    rgb_tensor=single_batch['rgb_tensor'][0],
+                    predicted_bboxes_matched=predicted_bboxes_matched,
+                    gt_bboxes_matched=gt_bboxes_matched,
+                )
+
+            # Log progress
+            if epoch % log_interval == 0:
+                print(
+                    f'Overfit Epoch [{epoch}/{num_epochs}]: '
+                    f'Loss: {loss.item():.4f}, '
+                    f'Mean IoU: {metrics["mean_iou"]:.4f}'
+                )
+
+                wandb.log(
+                    {
+                        'overfit_epoch': epoch,
+                        'overfit_loss': loss.item(),
+                        'overfit_mean_iou': metrics['mean_iou'],
+                        **{
+                            f'overfit_iou@{t}': acc
+                            for t, acc in metrics['threshold_accuracy'].items()
+                        },
+                    }
+                )
+
+        return count
+
     def train_one_epoch(
         self, epoch: int, iou_evaluator: IoUEvaluator, log_interval: int = 10
     ) -> dict:
@@ -155,7 +293,8 @@ class Trainer:
             loss.backward()
 
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.1, norm_type=2.0)
+            # Changed the norm from 0.1 to 1.0
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0, norm_type=2.0)
 
             # Parameter update
             self.optimizer.step()
@@ -361,12 +500,108 @@ class Trainer:
 
         return predicted_bboxes_matched, gt_bboxes_matched
 
+    def visualize_box_distributions(
+        self, predicted_bboxes: npt.NDArray, gt_bboxes: npt.NDArray
+    ) -> None:
+        """Visualize the distribution of predicted vs ground truth box sizes.
+
+        Args:
+            predicted_bboxes: shape (num_boxes, 8, 3) - predicted box corners
+            gt_bboxes: shape (num_boxes, 8, 3) - ground truth box corners
+        """
+
+        # Compute box dimensions
+        def get_box_dims(boxes: npt.NDArray) -> tuple:
+            # Reshape to (num_boxes, 8, 3)
+            boxes = boxes.reshape(-1, 8, 3)
+            # Get min and max coordinates
+            mins = boxes.min(axis=1)  # (num_boxes, 3)
+            maxs = boxes.max(axis=1)  # (num_boxes, 3)
+            # Compute lengths along each dimension
+            dims = maxs - mins  # (num_boxes, 3)
+            # Compute volumes
+            volumes = dims.prod(axis=1)  # (num_boxes,)
+            return dims, volumes
+
+        pred_dims, pred_volumes = get_box_dims(predicted_bboxes)
+        gt_dims, gt_volumes = get_box_dims(gt_bboxes)
+
+        # Create figure with multiple subplots
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 10))
+
+        # Plot volume distributions
+        ax1.hist(pred_volumes, bins=20, alpha=0.5, label='Predicted', color='red')
+        ax1.hist(gt_volumes, bins=20, alpha=0.5, label='Ground Truth', color='blue')
+        ax1.set_title('Box Volumes Distribution')
+        ax1.set_xlabel('Volume')
+        ax1.set_ylabel('Count')
+        ax1.legend()
+
+        # Plot dimension distributions
+        dimensions = ['X', 'Y', 'Z']
+        for i, dim in enumerate(dimensions):
+            ax2.hist(pred_dims[:, i], bins=20, alpha=0.5, label=f'Pred {dim}', color=f'C{i}')
+            ax2.hist(
+                gt_dims[:, i], bins=20, alpha=0.5, label=f'GT {dim}', linestyle='--', color=f'C{i}'
+            )
+        ax2.set_title('Box Dimensions Distribution')
+        ax2.set_xlabel('Length')
+        ax2.set_ylabel('Count')
+        ax2.legend()
+
+        # Plot dimension ratios
+        pred_ratios = pred_dims / pred_dims.max(axis=1, keepdims=True)
+        gt_ratios = gt_dims / gt_dims.max(axis=1, keepdims=True)
+
+        for i, dim in enumerate(dimensions):
+            ax3.hist(pred_ratios[:, i], bins=20, alpha=0.5, label=f'Pred {dim}', color=f'C{i}')
+            ax3.hist(
+                gt_ratios[:, i],
+                bins=20,
+                alpha=0.5,
+                label=f'GT {dim}',
+                linestyle='--',
+                color=f'C{i}',
+            )
+        ax3.set_title('Box Dimension Ratios')
+        ax3.set_xlabel('Ratio to Largest Dimension')
+        ax3.set_ylabel('Count')
+        ax3.legend()
+
+        # Plot centers
+        pred_centers = predicted_bboxes.reshape(-1, 8, 3).mean(axis=1)
+        gt_centers = gt_bboxes.reshape(-1, 8, 3).mean(axis=1)
+
+        for i, dim in enumerate(dimensions):
+            ax4.hist(pred_centers[:, i], bins=20, alpha=0.5, label=f'Pred {dim}', color=f'C{i}')
+            ax4.hist(
+                gt_centers[:, i],
+                bins=20,
+                alpha=0.5,
+                label=f'GT {dim}',
+                linestyle='--',
+                color=f'C{i}',
+            )
+        ax4.set_title('Box Center Positions')
+        ax4.set_xlabel('Position')
+        ax4.set_ylabel('Count')
+        ax4.legend()
+
+        plt.tight_layout()
+
+        # Save the plot
+        plt.savefig('box_distributions.png')
+        plt.close()
+
+        # Log to wandb
+        wandb.log({'box_distributions': wandb.Image('box_distributions.png')})
+
     def train(self) -> None:
         """
         Main training loop for training the model and saving checkpoints.
         """
         # Display training details
-        print(f'Model: {self.model}')
+        # print(f'Model: {self.model}')
         print(f'Optimizer: {self.optimizer}')
         print(f'Scheduler: {self.scheduler}')
         print(f'Criterion: {self.criterion}')
@@ -379,12 +614,23 @@ class Trainer:
             print(f'Starting epoch {epoch}/{self.max_epochs}')
 
             # Train for one epoch
+            """
             train_metrics = self.train_one_epoch(
                 epoch=epoch,
                 iou_evaluator=IoUEvaluator(iou_thresholds=[0.25, 0.5]),
             )
+            """
+            # Train the model on a single sample for debugging
+            count = self.test_overfit_on_single_sample(
+                iou_evaluator=IoUEvaluator(iou_thresholds=[0.25, 0.5]),
+                num_epochs=100,
+                log_interval=1,
+            )
+
+            print(f'Number of times IoU value above 0.25: {count}')
 
             # Log training metrics
+            train_metrics = {'mean_loss': 0.0, 'iou_metrics': {'mean_iou': 0.0}}  # Dummy for now.
             wandb.log({'epoch': epoch, **train_metrics})
 
             # Save latest checkpoint

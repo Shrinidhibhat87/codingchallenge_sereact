@@ -31,29 +31,31 @@ model:
   mlp_dropout: 0.3
   num_queries: 256
   num_angular_bins: 12
-  pretrained_weights_path: null
+  pretrained_weights_path: "/home/s.bhat/Coding/Pre_trained_Weights/3detr/scannet_ep1080.pth"
 
 optimizer:
-  base_lr: 0.0005
-  warm_lr: 1e-6
+  base_lr: 0.0001 # Was 0.0005
+  warm_lr: 5e-6 # Increasing it to 5e-6 from 1e-6
   warm_lr_epochs: 9
   final_lr: 1e-6
   lr_scheduler: cosine
-  weight_decay: 0.1
-  filter_biases_wd: false
+  weight_decay: 0.01 # Reduced the weight decay from 0.1 to 0.01
+  filter_biases_wd: True
   clip_gradient: 0.1
 
 loss:
   matcher_costs:
-    giou: 2.0
-    cost_box_corners: 0.1
+    giou: 5.0
+    cost_box_corners: 1.0
+    l1: 2.0
   weights:
-    giou: 0.1
-    box_corners: 0.1
+    giou: 1.0
+    box_corners: 2.0
     center: 5.0
+    size_reg: 1.0
+    size: 5.0
     angle_cls: 0.1
     angle_reg: 0.5
-    size: 1.0
     no_object: 0.2
 
 debug:
