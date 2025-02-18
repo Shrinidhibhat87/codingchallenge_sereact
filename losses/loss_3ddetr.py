@@ -4,6 +4,8 @@ This file is also inspired from the official implementation of 3DDETR.
 Link: https://facebookresearch.github.io/3detr
 """
 
+from typing import Optional
+
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -60,13 +62,14 @@ def all_reduce_average(tensor: torch.Tensor) -> torch.Tensor:
 
 
 class MatcherLoss(nn.Module):
-    def __init__(self, cost_giou: float, cost_box_corners: float) -> None:
+    def __init__(self, cost_giou: float, cost_box_corners: float, cost_l1: float) -> None:
         super().__init__()
         self.cost_giou = cost_giou
         self.cost_box_corners = cost_box_corners
+        self.cost_l1 = cost_l1
 
     @torch.no_grad()
-    def forward(self, outputs: dict, targets: torch.Tensor) -> dict:
+    def forward(self, outputs: dict, targets: torch.Tensor, epoch: int) -> dict:
         # Get the batch size
         batch_size = outputs['box_corners'].shape[0]
         # Get the number of queries
@@ -84,9 +87,18 @@ class MatcherLoss(nn.Module):
             targets.view(batch_size, -1, 24),
             p=1,
         )
+        # Normalize the costs between [0,1] range for stable matching
+        # box_corners_dist = box_corners_dist / (box_corners_dist.max() + 1e-6)
 
-        # GIoU cost (batch, num_queries, ngt). Negative GIoU score.
+        # GIoU cost (batch, num_queries, ngt). Negative GIoU score. Normalize this as well.
         giou_matching = -outputs['gious'].detach()
+        # giou_matching = giou_matching / (giou_matching.max() + 1e-6)
+
+        # Progressive matching scheme
+        if epoch < 10:
+            self.cost_giou = 1.0
+        else:
+            self.cost_giou = 5.0
 
         # Calculate the final cost
         final_cost = self.cost_box_corners * box_corners_dist + self.cost_giou * giou_matching
@@ -136,6 +148,7 @@ class SetCriterion(nn.Module):
         self.loss_functions = {
             'loss_box_corners': self.loss_box_corners,
             'loss_giou': self.loss_giou,
+            'loss_size_reg': self.loss_size_regularization,
         }
 
     """
@@ -294,6 +307,38 @@ class SetCriterion(nn.Module):
         # Return the GIoU loss
         return {'loss_giou': giou_loss}
 
+    def loss_size_regularization(
+        self, outputs: dict, gt_bbox_corners: torch.Tensor, assignments: dict
+    ) -> dict:
+        """Penalize boxes that are too large compared to the GT boxes."""
+        # Get the predicted box corners (B, N_q, 8, 3)
+        predicted_box_corners = outputs['box_corners']
+
+        # Compute the box dimensions
+        # (B. N_q, 3)
+        pred_dims = predicted_box_corners.max(dim=2)[0] - predicted_box_corners.min(dim=2)[0]
+        # (B, N_q, 3)
+        gt_dims = gt_bbox_corners.max(dim=2)[0] - gt_bbox_corners.min(dim=2)[0]
+
+        # Get the matched ground truth dimensions
+        matched_gt_dims = torch.gather(
+            gt_dims, 1, assignments['per_prop_gt_inds'].unsqueeze(-1).expand(-1, -1, 3)
+        )
+
+        # Compute the size ratio penalty (penalize when pred > ground_truth)
+        size_ratio = pred_dims / matched_gt_dims + 1e-6
+        # Penaliize boxes that are > 20% larger than the ground truth boxes (This should be made configurable)
+        size_penalty = F.relu(size_ratio - 1.2)
+
+        # Zero-out non-matched proposals
+        size_reg_loss = size_penalty.sum(dim=-1) * assignments['proposal_matched_mask']
+        size_reg_loss = size_reg_loss.sum() / gt_bbox_corners.shape[1]
+
+        # Directly penalize large bounding boxes
+        # size_reg_loss += torch.mean(pred_dims ** 2) * 0.1
+
+        return {'loss_size_reg': size_reg_loss}
+
     def loss_box_corners(
         self, outputs: dict, gt_bbox_corners: torch.Tensor, assignments: dict
     ) -> dict:
@@ -328,7 +373,7 @@ class SetCriterion(nn.Module):
         return {'loss_box_corners': box_corners_loss}
 
     def single_output_forward(
-        self, outputs: dict, targets: torch.Tensor
+        self, outputs: dict, targets: torch.Tensor, epoch: int
     ) -> tuple[torch.Tensor, dict, dict]:
         # Compute the Generalized Intersection over Union (GIoU) between predicted and ground truth boxes
         # NOTE: Here we have assumed that the boxes are not rotated.
@@ -355,7 +400,7 @@ class SetCriterion(nn.Module):
 
         # Perform the matching between predictions and ground truth boxes
         # targets is already a tensor
-        assignments = self.matcher_loss(outputs, targets)
+        assignments = self.matcher_loss(outputs, targets, epoch)
 
         # Initialize a dictionary to store the losses
         losses = {}
@@ -385,7 +430,9 @@ class SetCriterion(nn.Module):
         # Return the final loss and the individual losses
         return final_loss, losses, assignments
 
-    def forward(self, outputs: dict, targets: torch.Tensor) -> tuple[torch.Tensor, dict, dict]:
+    def forward(
+        self, outputs: dict, targets: torch.Tensor, epoch: Optional[int] = 0
+    ) -> tuple[torch.Tensor, dict, dict]:
         # Because the outputs has the batch dimension, add that in targets
         if targets.dim() == 3:
             targets = targets.unsqueeze(0)
@@ -404,7 +451,7 @@ class SetCriterion(nn.Module):
         # targets["num_boxes_replica"] = nactual_gt.sum().item()
 
         # Compute the loss and loss dictionary for the main outputs
-        loss, loss_dict, assingments = self.single_output_forward(outputs, targets)
+        loss, loss_dict, assingments = self.single_output_forward(outputs, targets, epoch)
 
         # If there are auxiliary outputs, compute the loss for each of them
         """
@@ -434,6 +481,7 @@ class LossFunction(nn.Module):
         matcher_loss = MatcherLoss(
             cost_giou=cfg_loss.matcher_costs.giou,
             cost_box_corners=cfg_loss.matcher_costs.cost_box_corners,
+            cost_l1=cfg_loss.matcher_costs.l1,
         )
         # Define the loss weight dictionary
         loss_weight_dict = {
@@ -443,5 +491,7 @@ class LossFunction(nn.Module):
         # Define the criterion
         self.criterion = SetCriterion(matcher_loss=matcher_loss, loss_weight_dict=loss_weight_dict)
 
-    def forward(self, outputs: dict, targets: torch.Tensor) -> tuple[torch.Tensor, dict, dict]:
-        return self.criterion(outputs, targets)
+    def forward(
+        self, outputs: dict, targets: torch.Tensor, epoch: Optional[int] = 0
+    ) -> tuple[torch.Tensor, dict, dict]:
+        return self.criterion(outputs, targets, epoch)
