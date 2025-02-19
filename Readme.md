@@ -145,6 +145,11 @@ codingchallenge_sereact/
 
 This structure ensures a clear separation of different components, making the project easy to navigate and maintain.
 ## Example outputs
+
+**Red Color --> Predicted Boxes**
+
+**Green Color --> Ground truth Boxes**
+
 ![Red -> Predicted Boxes ; Green -> GT Boxes](https://github.com/user-attachments/assets/030865d2-045f-4a0d-b8e8-b284deec92ec)
 
 
