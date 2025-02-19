@@ -148,11 +148,11 @@ class SetCriterion(nn.Module):
         self.loss_functions = {
             'loss_box_corners': self.loss_box_corners,
             'loss_giou': self.loss_giou,
+            'loss_size': self.loss_size,
             'loss_size_reg': self.loss_size_regularization,
         }
 
     """
-
     def loss_angle(
         self,
         outputs,
@@ -246,47 +246,40 @@ class SetCriterion(nn.Module):
 
         # Return the center loss
         return {"loss_center": center_loss}
+    """
 
-    def loss_size(
-        self,
-        outputs,
-        targets,
-        assignments
-    ):
+    def loss_size(self, outputs: dict, gt_bbox_corners: torch.Tensor, assignments: dict) -> dict:
         # Get the ground truth bbox sizes
-        gt_box_sizes = targets["gt_box_sizes_normalized"]
+        # Because the ground truth does not have size, we calculate the size from the corners
+        # Need to verify if the corners are normalized
+        gt_box_sizes = gt_bbox_corners.max(dim=2)[0] - gt_bbox_corners.min(dim=2)[0]
         # get the predicted bbox sizes
-        pred_box_sizes = outputs["size_normalized"]
+        pred_box_sizes = outputs['size_normalized']
 
         # Check if there are any ground truth boxes
-        if targets["num_boxes_replica"] > 0:
-            # Construct the ground truth boxes as (batch, nprop, 3) by using proposal to ground truth matching
-            gt_box_sizes = torch.stack(
-                [
-                    torch.gather(
-                        gt_box_sizes[:, :, i], 1, assignments["per_prop_gt_inds"]
-                    )
-                    for i in range(gt_box_sizes.shape[-1])
-                ],
-                dim=-1,
+        if gt_bbox_corners.shape[1] > 0:
+            # Gather the matched ground truth sizes using assignments
+            matched_gt_sizes = torch.gather(
+                gt_box_sizes, 1, assignments['per_prop_gt_inds'].unsqueeze(-1).expand(-1, -1, 3)
             )
             # Get the loss
-            size_loss = F.l1_loss(pred_box_sizes, gt_box_sizes, reduction="none").sum(
-                dim=-1
-            )
+            size_loss = F.l1_loss(
+                torch.log(pred_box_sizes + 1e-6),
+                torch.log(matched_gt_sizes + 1e-6),
+                reduction='none',
+            ).sum(dim=-1)
 
             # Zero-out non-matched proposals
-            size_loss *= assignments["proposal_matched_mask"]
+            size_loss *= assignments['proposal_matched_mask']
             size_loss = size_loss.sum()
 
-            size_loss /= targets["num_boxes"]
+            size_loss /= gt_bbox_corners.shape[1]
 
         else:
             size_loss = torch.zeros(1, device=pred_box_sizes.device).squeeze()
 
         # Return the Size loss
-        return {"loss_size": size_loss}
-    """
+        return {'loss_size': size_loss}
 
     def loss_giou(self, outputs: dict, targets: torch.Tensor, assignments: dict) -> dict:
         # Get the GIoU distances
@@ -487,6 +480,8 @@ class LossFunction(nn.Module):
         loss_weight_dict = {
             'loss_giou_weight': cfg_loss.weights.giou,
             'loss_box_corners_weight': cfg_loss.weights.box_corners,
+            'loss_size_weight': cfg_loss.weights.size,
+            'loss_size_reg_weight': cfg_loss.weights.size_reg,
         }
         # Define the criterion
         self.criterion = SetCriterion(matcher_loss=matcher_loss, loss_weight_dict=loss_weight_dict)
