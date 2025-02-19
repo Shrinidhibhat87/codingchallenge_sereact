@@ -50,13 +50,12 @@ loss:
     l1: 2.0
   weights:
     giou: 1.0
-    box_corners: 2.0
-    center: 5.0
+    box_corners: 1.0 # Was 2.0 made 1.0
+    size: 1.0
     size_reg: 1.0
-    size: 5.0
-    angle_cls: 0.1
-    angle_reg: 0.5
-    no_object: 0.2
+    # center: 5.0
+    # angle_cls: 0.1
+    # angle_reg: 0.5
 
 debug:
   enable: false
