@@ -148,7 +148,7 @@ This structure ensures a clear separation of different components, making the pr
 ![Red -> Predicted Boxes ; Green -> GT Boxes](https://github.com/user-attachments/assets/030865d2-045f-4a0d-b8e8-b284deec92ec)
 
 
-![Video from Open3D GUI] (https://github.com/user-attachments/assets/1f1b1ccf-5a8f-4654-b9d1-fad85c12e9f5)
+https://github.com/user-attachments/assets/1f1b1ccf-5a8f-4654-b9d1-fad85c12e9f5
 
 
 ## Future TODO
