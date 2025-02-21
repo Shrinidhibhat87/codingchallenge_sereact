@@ -41,8 +41,17 @@ There are primarily 5 components, although the diagram shows only 4 as it omits 
 ## Use of Pre-trained weights
 Used the 4th entry of the Pretrained [Model table](https://github.com/facebookresearch/3detr/tree/main?tab=readme-ov-file#pretrained-models). The pre-trained model was trained on the Scannet dataset and was trained for 1080 epochs.
 
+## Example Model Weights
+| Epoch | Val/IoU@0.25 | Val/IoU@0.50 | Val/Mean IoU |
+|-------|--------------|--------------|--------------|
+|   10  |    0.34807   |    0.063536  |    0.21278   |
+|   30  |    0.39227   |    0.060773  |    0.22693   |
+
+NOTE: The model weights are available and can be shared upon request.
+
 ## Future TODO
 
 1. Build a MLP head that directly predicts the corner coordinates based on the ground truth.
 2. Perform a complete analysis using different model weights.
 3. Try and test out masked encoder and see its effects on model performance.
+
