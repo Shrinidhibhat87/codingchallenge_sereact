@@ -14,10 +14,11 @@ The project consists of several key components:
     - Responsible for training and evaluating the model.
     - Includes methods for setting up the training pipeline, managing epochs, and evaluating performance.
 
-3. **[3DETR Implementation](https://github.com/facebookresearch/3detr/tree/main)**
+3. **[3DETR Implementation](https://github.com/Shrinidhibhat87/codingchallenge_sereact/tree/main/models#3detr-model)**
     - The project includes an implementation of the 3DETR model with modifications to suit the specific requirements of this project.
+    - [Original 3DETR Implementation](https://github.com/facebookresearch/3detr/tree/main)
 
-4. **Loss Function**
+4. **[Loss Function](https://github.com/Shrinidhibhat87/codingchallenge_sereact/tree/main/losses#loss-function-design-and-components)**
     - Utilizes Hungarian Matching for set-to-set prediction.
     - Employs a simple L1 loss for bounding box coordinate predictions.
 
