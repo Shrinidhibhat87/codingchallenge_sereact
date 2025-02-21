@@ -70,7 +70,6 @@ class GenericMLP(nn.Module):
             norm = NORM_DICT[norm_fn_name]
         if norm_fn_name == 'ln' and use_conv:
             # Use GroupNorm as a substitute for LayerNorm in Conv1d
-            # NEED TO READ MORE ABOUT THIS
             def group_norm(x: torch.Tensor) -> nn.GroupNorm:
                 return nn.GroupNorm(1, x)
 
