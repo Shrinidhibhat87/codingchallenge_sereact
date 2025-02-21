@@ -235,7 +235,7 @@ class Trainer:
         return count
 
     def train_one_epoch(
-        self, epoch: int, iou_evaluator: IoUEvaluator, log_interval: int = 10
+        self, epoch: int, iou_evaluator: IoUEvaluator, log_interval: int = 1
     ) -> dict:
         """
         Trains the model for one epoch.
@@ -322,21 +322,22 @@ class Trainer:
             if batch_idx % log_interval == 0 or batch_idx == total_batches:
                 mean_loss = epoch_loss / batch_idx
                 avg_batch_time = batch_time_accum / log_interval
+                """
                 eta = avg_batch_time * (total_batches - batch_idx)
                 eta_str = str(datetime.timedelta(seconds=int(eta)))
-
                 print(
                     f'Epoch [{epoch}]: Batch [{batch_idx}/{total_batches}], '
                     f'Loss: {mean_loss:.4f}, ETA: {eta_str}'
                 )
+                """
 
                 # Log to Weights and Biases
                 wandb.log(
                     {
-                        'epoch': epoch,
-                        'batch': batch_idx,
-                        'loss': mean_loss,
-                        'batch_time': avg_batch_time,
+                        'train_one_epoch/epoch': epoch,
+                        'train_one_epoch/batch': batch_idx,
+                        'train_one_epoch/loss': mean_loss,
+                        'train_one_epoch/batch_time': avg_batch_time,
                     }
                 )
 
@@ -350,19 +351,24 @@ class Trainer:
         # Log final epoch metrics to Weights and Biases
         wandb.log(
             {
-                'epoch': epoch,
-                'mean_loss': mean_loss,
-                'learning_rate': self.optimizer.param_groups[0]['lr'],
-                'mean_iou': metrics['mean_iou'],
-                'epoch_time': time.time() - start_time,
-                **{f'iou@{t}': acc for t, acc in metrics['threshold_accuracy'].items()},
+                'train_one_epoch/epoch': epoch,
+                'train_one_epoch/mean_loss': mean_loss,
+                'train_one_epoch/learning_rate': self.optimizer.param_groups[0]['lr'],
+                'train_one_epoch/mean_iou': metrics['mean_iou'],
+                'train_one_epoch/epoch_time': time.time() - start_time,
+                **{
+                    f'train_one_epoch/iou@{t}': acc
+                    for t, acc in metrics['threshold_accuracy'].items()
+                },
             }
         )
 
         # Print final metrics
-        print(f'Epoch [{epoch}] Complete: Mean Loss: {mean_loss:.4f}, IoU Metrics: {metrics}')
+        print(
+            f'train_one_epoch/Epoch [{epoch}] Complete: Mean Loss: {mean_loss:.4f}, IoU Metrics: {metrics}'
+        )
 
-        return {'mean_loss': mean_loss, 'iou_metrics': metrics}
+        return {'mean_train_loss': mean_loss, 'train_iou_metrics': metrics}
 
     @torch.no_grad()
     def validate(self, iou_evaluator: IoUEvaluator) -> dict:
@@ -377,14 +383,14 @@ class Trainer:
         """
         self.model.eval()
         iou_evaluator.reset()
-        metrics = {'iou': {}, 'loss': 0.0}
+        # metrics = {'val_iou': {}, 'val_loss': 0.0}
         total_loss = 0.0
         num_batches = len(self.validate_dataloader)
         time_per_batch = []
 
         print('Starting validation...')
 
-        for batch_idx, batch_data in enumerate(self.validate_dataloader):
+        for _, batch_data in enumerate(self.validate_dataloader):
             start_time = time.time()
 
             # Move input data to the specified device
@@ -443,10 +449,12 @@ class Trainer:
             time_per_batch.append(time.time() - start_time)
 
             # Print progress
+            """
             print(
                 f'Batch {batch_idx + 1}/{num_batches} '
                 f'Time per batch: {sum(time_per_batch) / len(time_per_batch):.2f}s'
             )
+            """
 
         # Compute IoU metrics for the validation
         metrics = iou_evaluator.compute_metrics()
@@ -455,9 +463,9 @@ class Trainer:
         # Log final validation metrics to Weights and Biases
         wandb.log(
             {
-                'mean_loss': mean_loss,
-                'mean_iou': metrics['mean_iou'],
-                **{f'iou@{t}': acc for t, acc in metrics['threshold_accuracy'].items()},
+                'val/mean_loss': mean_loss,
+                'val/mean_iou': metrics['mean_iou'],
+                **{f'val/iou@{t}': acc for t, acc in metrics['threshold_accuracy'].items()},
             }
         )
 
@@ -466,7 +474,7 @@ class Trainer:
         print(f'IoU Metrics: {metrics}')
         print(f'Average Loss: {mean_loss:.4f}')
 
-        return {'mean_loss': mean_loss, 'iou_metrics': metrics}
+        return {'val_mean_loss': mean_loss, 'val_iou_metrics': metrics}
 
     def get_predicted_and_gt_boxes_from_assignments(
         self, pred_boxes: dict, assignments: dict, gt_bbox: torch.Tensor
@@ -602,9 +610,9 @@ class Trainer:
         """
         # Display training details
         # print(f'Model: {self.model}')
-        print(f'Optimizer: {self.optimizer}')
-        print(f'Scheduler: {self.scheduler}')
-        print(f'Criterion: {self.criterion}')
+        # print(f'Optimizer: {self.optimizer}')
+        # print(f'Scheduler: {self.scheduler}')
+        # print(f'Criterion: {self.criterion}')
         print(f'Training starts at epoch {self.start_epoch} and ends at epoch {self.max_epochs}')
         print(f'Iterations per training epoch: {len(self.train_dataloader)}')
         print(f'Iterations per validation epoch: {len(self.validate_dataloader)}')
@@ -614,7 +622,6 @@ class Trainer:
             print(f'Starting epoch {epoch}/{self.max_epochs}')
 
             # Train for one epoch
-            """
             train_metrics = self.train_one_epoch(
                 epoch=epoch,
                 iou_evaluator=IoUEvaluator(iou_thresholds=[0.25, 0.5]),
@@ -628,31 +635,35 @@ class Trainer:
             )
 
             print(f'Number of times IoU value above 0.25: {count}')
+            """
 
             # Log training metrics
-            train_metrics = {'mean_loss': 0.0, 'iou_metrics': {'mean_iou': 0.0}}  # Dummy for now.
-            wandb.log({'epoch': epoch, **train_metrics})
-
-            # Save latest checkpoint
-            self.save_checkpoint(
-                epoch=epoch,
-                val_metrics=None,
-                filename='checkpoint_latest.pth',
+            # train_metrics = {'mean_loss': 0.0, 'iou_metrics': {'mean_iou': 0.0}}  # Dummy for now.
+            wandb.log(
+                {
+                    'epoch': epoch,
+                    'loss/train': train_metrics['mean_train_loss'],
+                    'iou/train': train_metrics['train_iou_metrics']['mean_iou'],
+                    # **train_metrics
+                }
             )
-
-            print(f'Checkpoint saved for epoch {epoch}')
 
             # Run validation
             print(f'Running validation for epoch {epoch}')
             val_metrics = self.validate(
                 iou_evaluator=IoUEvaluator(iou_thresholds=[0.25, 0.5]),
             )
-
             # Log validation metrics
-            wandb.log({'epoch': epoch, **val_metrics})
-
+            wandb.log(
+                {
+                    'epoch': epoch,
+                    'loss/val': val_metrics['val_mean_loss'],
+                    'iou/val': val_metrics['val_iou_metrics']['mean_iou'],
+                    # **val_metrics
+                }
+            )
             # Save best checkpoint based on validation IoU
-            current_iou = val_metrics['iou_metrics']['mean_iou']
+            current_iou = val_metrics['val_iou_metrics']['mean_iou']
             if current_iou > self.best_iou:
                 self.best_iou = current_iou
                 self.save_checkpoint(
