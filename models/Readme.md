@@ -6,7 +6,7 @@ As mentioned previously, the model is heavily inspired by the original implement
 
 ![mermaid-diagram-2025-02-21-112447](https://github.com/user-attachments/assets/bbb7a14e-a872-4e83-9602-ad00a68fea94)
 
-There are primarily 5 components:
+There are primarily 5 components, although the diagram shows only 4 as it omits the prediction heads:
 
 1. **Pre-Encoder**
     - Responsible for PointCloud preprocessing and reducing the points to fit the Transformer Encoder.
