@@ -4,7 +4,7 @@ input_folder_path: "/home/s.bhat/Coding/codingchallenge_sereact/data"
 
 seed: 40
 start_epoch: 0
-max_epochs: 10
+max_epochs: 30
 batch_size: 1
 num_workers: 4
 eval_every_epoch: 10
@@ -32,6 +32,8 @@ model:
   num_queries: 256
   num_angular_bins: 12
   pretrained_weights_path: "/home/s.bhat/Coding/Pre_trained_Weights/3detr/scannet_ep1080.pth"
+  export_model: false
+
 
 optimizer:
   base_lr: 0.0001 # Was 0.0005
