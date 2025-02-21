@@ -37,6 +37,8 @@ def load_weights(
                 ):
                     filtered_state_dict[name] = pretrained_state_dict['model'][name]
                 else:
+                    continue
+                    # Ignore the prints to reduce bloating
                     print(
                         f'Skipping parameter {name} as it is not found in the pretrained weights or the shapes mismatch.'
                     )
@@ -45,11 +47,11 @@ def load_weights(
                             f'Expected shape: {param.shape}, Got shape: {pretrained_state_dict[name].shape}'
                         )
 
-        # Load the filtered state dict
-        missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
-
         # Print the summary
         print(f'Successfully loaded {len(filtered_state_dict)} encoder weights.')
+        """
+        # Load the filtered state dict
+        missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
         print(f'Missing keys: {missing_keys}')
         print(f'Unexpected keys: {unexpected_keys}')
 
@@ -58,5 +60,6 @@ def load_weights(
             if name.startswith('pre_encoder') or name.startswith('encoder'):
                 status = 'YES' if name in filtered_state_dict else 'NO'
                 print(f'{status} {name}: {param.shape}')
+        """
     else:
         print('Loading the full model weights is not implemented yet!')

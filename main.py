@@ -278,7 +278,7 @@ def main(cfg: DictConfig) -> None:
             print('Starting training...')
             trainer.train()
 
-        if cfg.export_model:
+        if cfg.model.export_model:
             print('Start of conversion to low precision formats')
             convert_model_to_low_precision(cfg, model, DEVICE)
             print('Model conversion successul')
